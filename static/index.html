@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>POSTA — Dashboard</title>
+  <style>
+    body { background: #0b0d12; color: #eef1f7; font-family: "Segoe UI", system-ui, sans-serif; margin: 0; }
+    .view.hidden { display: none !important; }
+  </style>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="view-auth" class="view">
+    <div class="auth-card">
+      <h1>POSTA</h1>
+      <p class="subtitle">AKS order tracking</p>
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">Login</button>
+        <button class="auth-tab" data-tab="register">Register</button>
+      </div>
+      <form id="loginForm" class="auth-form">
+        <label>Email</label>
+        <input type="email" id="loginEmail" required placeholder="you@email.com" />
+        <label>Password</label>
+        <input type="password" id="loginPassword" required placeholder="••••••" />
+        <button type="submit" class="btn primary full">Log in</button>
+      </form>
+      <form id="registerForm" class="auth-form hidden">
+        <label>Name</label>
+        <input type="text" id="registerName" placeholder="Your name" />
+        <label>Email</label>
+        <input type="email" id="registerEmail" required placeholder="you@email.com" />
+        <label>Password</label>
+        <input type="password" id="registerPassword" required minlength="6" placeholder="min. 6 characters" />
+        <button type="submit" class="btn primary full">Create account</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- APP SHELL -->
+  <div id="view-app" class="view hidden">
+    <header class="header">
+      <div class="header-inner">
+        <div class="brand" id="goHome">
+          <h1>POSTA</h1>
+          <span id="userGreeting" class="user-greeting"></span>
+        </div>
+        <nav class="main-nav">
+          <button class="nav-btn active" data-view="dashboard">Batches</button>
+          <button class="nav-btn" data-view="stats">Statistics</button>
+          <button class="nav-btn" data-view="new-batch">+ New batch</button>
+          <button class="nav-btn ghost" id="logoutBtn">Log out</button>
+        </nav>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- DASHBOARD -->
+      <section id="page-dashboard" class="page active">
+        <div class="page-head">
+          <h2>Batches by date</h2>
+          <div class="filter-row">
+            <div class="seg-control">
+              <button class="seg active" data-kind="imported">Import date</button>
+              <button class="seg" data-kind="sent">Sent date</button>
+            </div>
+          </div>
+        </div>
+        <div class="dashboard-grid">
+          <div class="card dates-card">
+            <h3>Select day</h3>
+            <div id="dateList" class="date-list"></div>
+          </div>
+          <div class="card">
+            <h3 id="batchListTitle">All batches</h3>
+            <div id="dashboardBatchList" class="batch-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STATISTICS -->
+      <section id="page-stats" class="page">
+        <div class="page-head">
+          <h2>Status statistics</h2>
+          <p>Overview by phase: registered → sent → AKS tracking</p>
+        </div>
+        <div class="stats-filters card">
+          <label>Filter by import date</label>
+          <select id="statsDateFilter">
+            <option value="">All dates</option>
+          </select>
+        </div>
+        <div id="statsSummary" class="stats-grid"></div>
+        <div id="statsBars" class="stats-bars card"></div>
+      </section>
+
+      <!-- NEW BATCH -->
+      <section id="page-new-batch" class="page">
+        <div class="page-head">
+          <h2>Create new batch</h2>
+          <p>Choose a batch name, then paste your leads below.</p>
+        </div>
+        <div class="card">
+          <label for="batchName">Batch name <span class="required">*</span></label>
+          <input id="batchName" type="text" required placeholder="e.g. Monday orders — Jun 10" />
+          <label for="leadsText">Leads</label>
+          <p class="field-hint">Format: Name Surname, street, city postal code, phone. Blank line between each lead.</p>
+          <textarea id="leadsText" rows="14" placeholder="Nemanja Spasovic
+Sava Kovacevica 54
+Krusevac 120000
+0655553333"></textarea>
+          <button id="createBatchBtn" class="btn primary">Create batch</button>
+        </div>
+      </section>
+
+      <!-- BATCH DETAIL -->
+      <section id="page-batch" class="page">
+        <div class="page-head batch-head">
+          <div>
+            <button class="btn ghost back-btn" id="backToDashboard">← Back</button>
+            <div class="batch-name-edit">
+              <input type="text" id="batchNameEdit" placeholder="Batch name" />
+              <button type="button" id="saveBatchNameBtn" class="btn secondary">Save name</button>
+            </div>
+            <p id="batchMeta"></p>
+          </div>
+          <div class="batch-actions">
+            <span class="phase-badge" id="batchPhase"></span>
+            <button id="goTrackingBtn" class="btn primary" disabled>Start tracking</button>
+          </div>
+        </div>
+
+        <div class="batch-steps">
+          <button class="step-btn active" data-step="link">1. Enter Order ID</button>
+          <button class="step-btn" data-step="track">2. Tracking</button>
+        </div>
+
+        <div id="step-link" class="batch-panel active">
+          <div class="link-head">
+            <span id="linkProgress">0 / 0</span>
+            <span class="track-note-inline">Order ID must be 14 digits (e.g. 91766000346509)</span>
+          </div>
+          <div class="bulk-toolbar card" id="bulkToolbar">
+            <label class="select-all-label">
+              <input type="checkbox" id="selectAllLeads" />
+              Select all
+            </label>
+            <span id="selectedCount" class="selected-count">0 selected</span>
+            <select id="bulkStatusSelect">
+              <option value="registered">Registered</option>
+              <option value="sent">Sent to courier</option>
+            </select>
+            <button type="button" id="bulkApplyStatusBtn" class="btn secondary" disabled>Apply status</button>
+            <button type="button" id="bulkMarkSentBtn" class="btn secondary" disabled>Mark sent to courier</button>
+            <button type="button" id="bulkDeleteBtn" class="btn danger" disabled>Delete selected</button>
+          </div>
+          <div class="link-layout">
+            <div class="link-list" id="leadList"></div>
+          </div>
+        </div>
+
+        <div id="step-track" class="batch-panel">
+          <div class="link-head">
+            <button id="refreshTrackingBtn" class="btn primary">Refresh now</button>
+            <span class="track-note-inline">Fully automatic via AKS API · auto-check every 2 hours</span>
+          </div>
+          <div id="trackingList" class="tracking-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script>
+    document.getElementById("view-app")?.classList.add("hidden");
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

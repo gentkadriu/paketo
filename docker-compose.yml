@@ -1,0 +1,14 @@
+services:
+  paketo:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${POSTA_PORT:-8000}:8000"
+    volumes:
+      - paketo-data:/data
+    environment:
+      POSTA_DB_PATH: /data/posta.db
+
+volumes:
+  paketo-data:

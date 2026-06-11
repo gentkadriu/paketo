@@ -1,0 +1,14 @@
+node_modules
+frontend/node_modules
+frontend/dist
+.git
+.env
+posta.db
+data
+__pycache__
+*.pyc
+.venv
+venv
+*.md
+scripts
+terminals
