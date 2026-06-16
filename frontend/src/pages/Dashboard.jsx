@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Calendar, ChevronRight, Package } from "lucide-react";
+import { Calendar, ChevronRight, Package, Plus } from "lucide-react";
 import { api, formatDate } from "../api";
 import { useI18n } from "../context/I18nContext";
 import StatusPill from "../components/StatusPill";
@@ -31,15 +31,25 @@ export default function Dashboard() {
 
   const phase = (b) => {
     if (b.status === "tracking") return { s: "in_transit", key: "phaseTracking" };
-    if (b.sent_at) return { s: "sent", key: "phaseSent" };
+    if (b.linked_count > 0) return { s: "sent", key: "phaseSent" };
     return { s: "registered", key: "phaseRegistered" };
   };
 
   return (
     <div className="animate-slide-up space-y-4 sm:space-y-6">
-      <div>
-        <h1 className="font-display text-xl sm:text-2xl font-bold text-themed">{t("dashboard.title")}</h1>
-        <p className="mt-1 text-sm text-themed-muted">{t("dashboard.subtitle")}</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-xl sm:text-2xl font-bold text-themed">{t("dashboard.title")}</h1>
+          <p className="mt-1 text-sm text-themed-muted">{t("dashboard.subtitle")}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate("/new")}
+          className="btn-primary inline-flex items-center gap-2 min-h-[44px] shrink-0"
+        >
+          <Plus className="h-4 w-4" />
+          {t("nav.newBatch")}
+        </button>
       </div>
 
       <TodayCards data={today} />

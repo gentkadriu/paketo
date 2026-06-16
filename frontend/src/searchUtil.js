@@ -15,10 +15,13 @@ export function leadMatchesSearch(lead, term) {
   const phone = lead.phone || "";
   const batchName = lead.batch_name || "";
 
-  const haystack = foldText(`${full} ${first} ${last} ${orderId} ${phone} ${batchName}`);
+  const haystack = foldText(`${full} ${first} ${last} ${orderId} ${phone} ${batchName} ${lead.street || ""} ${lead.city || ""} ${lead.postal_code || ""}`);
   const foldedTerm = foldText(term);
-
   if (foldedTerm.length < 2) return false;
+
+  const phoneDigits = (lead.phone || "").replace(/\D/g, "");
+  const termDigits = foldedTerm.replace(/\D/g, "");
+  if (termDigits.length >= 3 && phoneDigits.includes(termDigits)) return true;
   if (haystack.includes(foldedTerm)) return true;
 
   const words = foldedTerm.split(/\s+/).filter((w) => w.length >= 2);

@@ -1,11 +1,12 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Package, BarChart3, LogOut, Sparkles, Sun, Moon } from "lucide-react";
+import { LayoutDashboard, BarChart3, LogOut, Sun, Moon, Wallet, Settings, Shield } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/I18nContext";
 import { useTheme } from "../context/ThemeContext";
 import { LANGUAGES } from "../locales/translations";
 import SearchBar from "./SearchBar";
 import MobileNav from "./MobileNav";
+import WelcomeBar from "./WelcomeBar";
 
 export default function Layout() {
   const { user, logout } = useAuth();
@@ -15,9 +16,13 @@ export default function Layout() {
 
   const nav = [
     { to: "/", icon: LayoutDashboard, label: t("nav.batches") },
-    { to: "/new", icon: Package, label: t("nav.newBatch") },
     { to: "/stats", icon: BarChart3, label: t("nav.stats") },
+    { to: "/finance", icon: Wallet, label: t("nav.finance") },
+    { to: "/settings", icon: Settings, label: t("nav.settings") },
   ];
+  if (user?.role === "admin") {
+    nav.push({ to: "/admin", icon: Shield, label: t("nav.admin") });
+  }
 
   return (
     <div className="min-h-screen pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
@@ -25,9 +30,11 @@ export default function Layout() {
         <div className="mx-auto max-w-6xl px-3 py-2.5 sm:px-6 sm:py-3">
           <div className="flex items-center justify-between gap-2 sm:gap-3">
             <button onClick={() => navigate("/")} className="flex items-center gap-2 group shrink-0 min-h-[44px]">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-md">
-                <Sparkles className="h-4 w-4 text-white" />
-              </div>
+              <img
+                src="/favicon.svg"
+                alt=""
+                className="h-9 w-9 rounded-xl shadow-md"
+              />
               <span className="font-display text-base font-bold tracking-tight text-themed hidden sm:block">Paketo</span>
             </button>
 
@@ -69,6 +76,7 @@ export default function Layout() {
       </header>
 
       <main className="mx-auto max-w-6xl px-3 py-4 sm:px-6 sm:py-8 animate-fade-in">
+        <WelcomeBar />
         <Outlet />
       </main>
 

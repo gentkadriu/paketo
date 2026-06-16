@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.datetime_util import now_local
 from app.database import get_connection
+from app.finance_db import sync_stock_on_tracking_update
 from app.status import categorize_aks_status
 from app.aks_client import reset_session, track_order
 from app.tracking_schedule import TRACKING_HOURS_CRON, TRACKING_SCHEDULE_LABEL, TRACKING_TIMEZONE
@@ -27,6 +28,18 @@ def refresh_lead_tracking(lead_id: int, order_id: str) -> tuple[bool, str | None
             history_json = json.dumps(tracking["history"], ensure_ascii=False)
 
             with get_connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT l.lifecycle_status, b.user_id
+                    FROM leads l
+                    JOIN batches b ON b.id = l.batch_id
+                    WHERE l.id = ?
+                    """,
+                    (lead_id,),
+                ).fetchone()
+                old_status = row["lifecycle_status"] if row else None
+                user_id = row["user_id"] if row else None
+
                 conn.execute(
                     """
                     UPDATE leads SET
@@ -46,6 +59,10 @@ def refresh_lead_tracking(lead_id: int, order_id: str) -> tuple[bool, str | None
                     lead_id,
                 ),
                 )
+                if user_id:
+                    sync_stock_on_tracking_update(
+                        conn, user_id, lead_id, old_status, lifecycle,
+                    )
             return True, None
         except Exception as exc:
             last_error = str(exc)

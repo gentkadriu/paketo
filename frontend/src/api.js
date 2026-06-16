@@ -17,6 +17,25 @@ export async function api(path, options = {}) {
   return data;
 }
 
+export async function apiUpload(path, file) {
+  const token = localStorage.getItem("paketo_token");
+  const form = new FormData();
+  form.append("file", file);
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API}${path}`, { method: "POST", headers, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    const message = Array.isArray(detail)
+      ? detail.map((d) => d.msg || String(d)).join(", ")
+      : detail || "Something went wrong.";
+    throw new Error(message);
+  }
+  return data;
+}
+
 export const ORDER_ID_LENGTH = 14;
 export const ORDER_ID_PLACEHOLDER = "917XXXXXXXXXXX";
 
@@ -44,11 +63,11 @@ export const STATUS_STYLES = {
   in_transit: "bg-sky-500/20 text-sky-300",
   out_for_delivery: "bg-blue-500/20 text-blue-300",
   delivered: "bg-emerald-500/20 text-emerald-300",
-  returned_to_warehouse: "bg-yellow-500/20 text-yellow-300",
+  returned_to_warehouse: "bg-orange-500/20 text-orange-300",
   delivery_canceled: "bg-orange-500/20 text-orange-300",
-  return_pending: "bg-rose-500/20 text-rose-300",
-  rejected: "bg-rose-500/20 text-rose-300",
-  returned: "bg-orange-500/20 text-orange-300",
+  return_pending: "bg-orange-500/20 text-orange-300",
+  rejected: "bg-red-500/20 text-red-300",
+  returned: "bg-red-500/20 text-red-300",
   unknown: "bg-slate-600/20 text-slate-400",
 };
 
@@ -56,14 +75,14 @@ export const TRACK_CARD_STYLES = {
   not_sent: "border-zinc-500/20 bg-white/[0.02] opacity-80",
   delivered: "border-emerald-500/35 bg-emerald-500/[0.06]",
   out_for_delivery: "border-blue-500/35 bg-blue-500/[0.06]",
-  returned_to_warehouse: "border-yellow-500/35 bg-yellow-500/[0.06]",
+  returned_to_warehouse: "border-orange-500/35 bg-orange-500/[0.06]",
   delivery_canceled: "border-orange-500/35 bg-orange-500/[0.06]",
-  return_pending: "border-rose-500/35 bg-rose-500/[0.06]",
+  return_pending: "border-orange-500/35 bg-orange-500/[0.06]",
   in_transit: "border-sky-500/25 bg-sky-500/[0.04]",
   in_warehouse: "border-slate-500/25 bg-white/[0.03]",
   sent: "border-amber-500/25 bg-amber-500/[0.04]",
-  rejected: "border-rose-500/35 bg-rose-500/[0.06]",
-  returned: "border-orange-500/35 bg-orange-500/[0.06]",
+  rejected: "border-red-500/40 bg-red-500/[0.08]",
+  returned: "border-red-500/40 bg-red-500/[0.08]",
   unknown: "",
 };
 

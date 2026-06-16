@@ -8,6 +8,8 @@ export default function Select({
   options,
   className = "",
   placeholder = "Select…",
+  fullWidth = false,
+  compact = false,
 }) {
   const [open, setOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState(null);
@@ -119,30 +121,34 @@ export default function Select({
     document.body,
   );
 
+  const openStyles = compact
+    ? "border-indigo-500/55 bg-indigo-500/10"
+    : "border-indigo-500/50 bg-indigo-500/10 shadow-lg shadow-indigo-950/30 ring-2 ring-indigo-500/25";
+
   return (
-    <div ref={rootRef} className={className}>
+    <div ref={rootRef} className={`${fullWidth ? "w-full min-w-0" : ""} ${open ? "relative z-10" : ""} ${className}`}>
       <button
         ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`flex min-w-[190px] items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left text-sm transition-all duration-200 ${
-          open
-            ? "border-indigo-500/50 bg-indigo-500/10 shadow-lg shadow-indigo-950/30 ring-2 ring-indigo-500/25"
-            : "border-white/10 bg-gradient-to-b from-white/[0.08] to-white/[0.03] hover:border-white/20 hover:from-white/[0.1] hover:to-white/[0.05]"
+        className={`box-border flex w-full items-center justify-between gap-2 rounded-xl border text-left transition-all duration-200 ${
+          compact ? "min-w-0 px-3 py-2 min-h-[40px] text-sm" : "min-w-[190px] px-3.5 py-2.5 text-sm"
+        } ${
+          open ? openStyles : "border-themed bg-themed-hover/50 hover:bg-themed-hover"
         }`}
       >
-        <span className="flex min-w-0 items-center gap-2.5">
-          {SelectedIcon && (
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          {SelectedIcon && !compact && (
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-300">
               <SelectedIcon className="h-3.5 w-3.5" />
             </span>
           )}
-          <span className={`truncate font-medium ${selected ? "text-white" : "text-slate-500"}`}>
+          <span className={`truncate font-medium ${selected ? "text-themed" : "text-themed-muted"}`}>
             {selected?.label ?? placeholder}
           </span>
         </span>
         <ChevronDown
-          className={`h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200 ${open ? "rotate-180 text-indigo-400" : ""}`}
+          className={`h-4 w-4 shrink-0 text-themed-muted transition-transform duration-200 ${open ? "rotate-180 text-indigo-400" : ""}`}
         />
       </button>
       {menu}

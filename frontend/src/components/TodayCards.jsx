@@ -15,7 +15,7 @@ export default function TodayCards({ data }) {
     { key: "imported_today", value: data.imported_today, icon: Package, color: "text-indigo-500" },
     { key: "missing_id", value: data.missing_id, icon: Hash, color: "text-amber-500" },
     { key: "out_for_delivery", value: data.out_for_delivery, icon: Truck, color: "text-blue-500" },
-    { key: "delivered_today", value: data.delivered_today, icon: CheckCircle2, color: "text-emerald-500" },
+    { key: "delivered_today", value: data.delivered_today ?? 0, icon: CheckCircle2, color: "text-emerald-500" },
     {
       key: "problems",
       value: data.problems,

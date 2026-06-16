@@ -1,141 +1,161 @@
-# Deploy Paketo (Oracle Cloud / any Linux VM)
+# Deploy Paketo (Linux VPS — Hetzner recommended)
 
 ## What's in this repo
 
 | File | Purpose |
 |------|---------|
 | `Dockerfile` | Builds frontend + runs Python app |
-| `docker-compose.yml` | Runs 24/7 with persistent DB volume |
+| `docker-compose.yml` | Runs 24/7 with `restart: unless-stopped` |
 | `.env.example` | Copy to `.env` and set secrets |
-| `deploy/install-oracle.sh` | First-time VM setup |
+| `deploy/install.sh` | First-time VPS setup (Ubuntu) |
 | `deploy/deploy.sh` | Update after `git push` |
-| `deploy/nginx-paketo.conf` | Optional reverse proxy on port 80 |
+| `deploy/nginx-paketo.conf` | Reverse proxy on port 80 |
 | `scripts/reset_db.py` | Wipe DB and start fresh |
 
-Database file: `data/posta.db` locally, `/data/posta.db` in Docker volume.
+Database: `data/posta.db` locally, `/data/posta.db` in Docker volume `paketo-data`.
 
 ---
 
-## 1. Oracle Cloud — create Always Free VM
+## 1. Create a VPS (Hetzner)
 
-1. Sign up at [cloud.oracle.com](https://cloud.oracle.com) (card hold ~$1, not a charge).
-2. **Create VM:**
-   - Shape: **Ampere** → **VM.Standard.A1.Flex**
-   - **Always Free-eligible**: 1 OCPU, 6 GB RAM (enough for Paketo)
-   - OS: **Ubuntu 22.04** or 24.04
-   - Add SSH key (download private key)
-3. **Networking:**
-   - Note the **public IP**
-   - Security list / NSG: allow inbound **TCP 22** (SSH), **8000** (app), later **80/443** if using nginx
+1. Sign up at [hetzner.com/cloud](https://www.hetzner.com/cloud).
+2. **Create server:**
+   - **CX22** (2 vCPU, 4 GB RAM) — enough for 15–20 users
+   - Location: Falkenstein or Helsinki
+   - OS: **Ubuntu 24.04**
+   - Add your SSH key
+3. Note the **public IPv4** from the Hetzner console.
 4. SSH in:
    ```bash
-   ssh ubuntu@YOUR_PUBLIC_IP
+   ssh root@YOUR_SERVER_IP
    ```
+   (DigitalOcean and similar: user is often `ubuntu`.)
+
+**Alternatives:** DigitalOcean droplet ($6/mo), any Ubuntu 24.04 VPS.
 
 ---
 
-## 2. First deploy on the VM
+## 2. First deploy
 
 ### Option A — Git (recommended)
 
-On your PC, push this project to a **private GitHub repo**.
-
-On the VM:
+Push this project to a **private GitHub repo**, then on the server:
 
 ```bash
-sudo bash -c 'PAKETO_REPO_URL=https://github.com/YOU/paketo.git bash -s' < deploy/install-oracle.sh
-```
-
-Or manually:
-
-```bash
-sudo apt update && sudo apt install -y git
-sudo git clone https://github.com/YOU/paketo.git /opt/paketo
+git clone https://github.com/YOUR_USER/paketo.git /opt/paketo
 cd /opt/paketo
-cp .env.example .env
-# Edit .env: set POSTA_SECRET (see below)
-sudo bash deploy/install-oracle.sh
+bash deploy/install.sh
 ```
 
-Generate secret:
+The script installs Docker, creates `.env` with a random `POSTA_SECRET`, and starts the app.
 
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-Put it in `.env` as `POSTA_SECRET=...`
-
-### Option B — Copy folder from PC
+### Option B — Copy from your PC
 
 ```powershell
-scp -r C:\Users\gentk\Desktop\POSTA ubuntu@YOUR_IP:/opt/paketo
+scp -r C:\Users\gentk\Desktop\POSTA root@YOUR_SERVER_IP:/opt/paketo
 ```
 
-Then SSH and run `deploy/install-oracle.sh` from `/opt/paketo`.
+Then SSH and run:
+
+```bash
+cd /opt/paketo
+bash deploy/install.sh
+```
+
+### Production `.env`
+
+Edit `/opt/paketo/.env`:
+
+```env
+PAKETO_ENV=production
+PAKETO_ALLOW_REGISTER=0
+PAKETO_HTTPS=1
+POSTA_SECRET=<already set by install script — keep it secret>
+POSTA_DB_PATH=/data/posta.db
+```
+
+Restart after changes:
+
+```bash
+cd /opt/paketo && docker compose up -d --build
+```
+
+### First admin user
+
+With `PAKETO_ALLOW_REGISTER=0`, public signup is off. For a **fresh server**:
+
+1. Temporarily set `PAKETO_ALLOW_REGISTER=1`, restart, register once, then set back to `0`, **or**
+2. Copy your existing `data/posta.db` to the server volume (migration from local).
+
+Promote your account to admin in the DB, or use username `auloni` (auto-admin on bootstrap). Then create other users in **Admin**.
 
 ---
 
 ## 3. Open the app
 
-- **http://YOUR_PUBLIC_IP:8000**
-- Register a new account (DB is empty)
+- Quick test: **http://YOUR_SERVER_IP:8000**
+- Production: use a domain + HTTPS (section 5).
 
 ---
 
 ## 4. Push updates later
 
-On the VM:
+On the server:
 
 ```bash
 cd /opt/paketo
 ./deploy/deploy.sh
 ```
 
-From your PC after coding:
+From your PC:
 
 ```bash
 git push
-ssh ubuntu@YOUR_IP "cd /opt/paketo && ./deploy/deploy.sh"
+ssh root@YOUR_SERVER_IP "cd /opt/paketo && ./deploy/deploy.sh"
 ```
 
 ---
 
-## 5. Free domain / URL options
-
-**There is no `vercel.app` for your own VM** — that only works on Vercel's platform.
+## 5. Domain and HTTPS (recommended for users)
 
 | Option | Cost | HTTPS | Notes |
 |--------|------|-------|-------|
-| **Public IP only** | Free | No | `http://IP:8000` — works immediately |
-| **[DuckDNS](https://www.duckdns.org)** | Free | No* | `yourname.duckdns.org` → your VM IP. Easy signup. |
-| **[No-IP](https://www.noip.com)** | Free | No* | Free subdomain, confirm every 30 days |
-| **nip.io / sslip.io** | Free | No | `http://YOUR.IP.nip.io:8000` — no signup, for testing |
-| **Cloudflare Tunnel** | Free | Yes | Stable HTTPS URL; needs free Cloudflare account |
-| **Domain + Cloudflare** | ~$8–10/year | Yes | Best long-term: buy `.com`, point DNS to VM, free SSL |
+| **Domain + Cloudflare DNS** | ~$10/year | Yes (Let's Encrypt) | Best for production |
+| **DuckDNS** | Free | Yes* | Quick subdomain for testing |
+| **Cloudflare Tunnel** | Free | Yes | No open ports; good for trials |
+| **IP only** | Free | No | Testing only — not for real users |
 
-\* Add **nginx + Let's Encrypt** (certbot) on the VM for HTTPS with DuckDNS/No-IP.
-
-### Quick DuckDNS setup
-
-1. Create account at duckdns.org → subdomain e.g. `paketo.duckdns.org`
-2. Point it to your Oracle VM public IP
-3. Open app at `http://paketo.duckdns.org:8000`
-4. Optional: install nginx (`deploy/nginx-paketo.conf`) on port 80 so you can drop `:8000`
-
-### Cloudflare Tunnel (free HTTPS, no open ports)
+### nginx + Let's Encrypt (Ubuntu)
 
 ```bash
-# On VM — see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o cf.deb
-sudo dpkg -i cf.deb
-cloudflared tunnel --url http://localhost:8000
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo cp /opt/paketo/deploy/nginx-paketo.conf /etc/nginx/sites-available/paketo
+sudo ln -sf /etc/nginx/sites-available/paketo /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+# Edit server_name in the config to your domain, then:
+sudo nginx -t && sudo systemctl enable --now nginx
+sudo certbot --nginx -d app.yourdomain.com
 ```
 
-Gives a temporary `*.trycloudflare.com` URL. For a fixed name, use a Cloudflare account + tunnel config.
+Set `PAKETO_HTTPS=1` in `.env` and restart Docker.
+
+Point your domain **A record** to the server IP in Cloudflare (or your registrar).
 
 ---
 
-## 6. Fresh database
+## 6. Backups
+
+Weekly (cron on the server):
+
+```bash
+docker compose -f /opt/paketo/docker-compose.yml exec -T paketo cat /data/posta.db > /root/paketo-backup-$(date +%F).db
+```
+
+Copy backups off the server (your PC, S3, etc.).
+
+---
+
+## 7. Fresh database
 
 Local:
 
@@ -143,35 +163,31 @@ Local:
 python scripts/reset_db.py
 ```
 
-On server (keeps Docker volume):
+On server (destroys all data in the volume):
 
 ```bash
+cd /opt/paketo
 docker compose down
-docker volume rm paketo_paketo-data   # or: docker compose down -v
+docker volume rm paketo_paketo-data
 docker compose up -d --build
 ```
 
 ---
 
-## 7. Stay on Oracle Always Free
+## 8. 24/7 operation
 
-- Use **Ampere A1 Flex** marked Always Free only
-- Do **not** create extra paid disks or load balancers
-- **Always Free** keeps running after the 30-day $300 trial ends
-- Back up DB occasionally: `docker compose exec paketo cat /data/posta.db > backup.db` or copy from volume
+- Docker `restart: unless-stopped` in `docker-compose.yml` — app restarts after crashes or reboots.
+- Optional systemd unit: `deploy/paketo-docker.service` (copy to `/etc/systemd/system/` if you want compose managed by systemd).
+- Do **not** run production on your home PC — use the VPS so users can reach it anytime.
 
 ---
 
-## 8. Optional: nginx on port 80
+## Quick checklist
 
-```bash
-sudo apt install -y nginx
-sudo cp deploy/nginx-paketo.conf /etc/nginx/sites-available/paketo
-sudo ln -s /etc/nginx/sites-available/paketo /etc/nginx/sites-enabled/
-sudo rm /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-Open TCP **80** in Oracle firewall. App at `http://YOUR_IP` or `http://yourname.duckdns.org`.
-
-HTTPS with DuckDNS: `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx -d yourname.duckdns.org`
+- [ ] Ubuntu VPS (Hetzner CX22 or similar)
+- [ ] `deploy/install.sh` completed
+- [ ] `PAKETO_ENV=production`, strong `POSTA_SECRET`, `PAKETO_ALLOW_REGISTER=0`
+- [ ] Admin account created
+- [ ] Domain + HTTPS
+- [ ] Firewall: SSH + 80 + 443 (install script enables UFW)
+- [ ] DB backup scheduled

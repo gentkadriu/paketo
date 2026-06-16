@@ -1,0 +1,449 @@
+{
+  "postal_to_city": {
+    "11000": "Beograd",
+    "11070": "Novi Beograd",
+    "11080": "Zemun",
+    "11200": "Beograd",
+    "11300": "Smederevo",
+    "11306": "Smederevo",
+    "11307": "Smederevo",
+    "11308": "Smederevo",
+    "11309": "Smederevo",
+    "11310": "Smederevo",
+    "11311": "Smederevo",
+    "11312": "Smederevo",
+    "11313": "Smederevo",
+    "11314": "Smederevo",
+    "11315": "Smederevo",
+    "11316": "Smederevo",
+    "11317": "Lozovik",
+    "11318": "Smederevo",
+    "11319": "Smederevo",
+    "11320": "Velika Plana",
+    "11321": "Smederevo",
+    "11322": "Smederevo",
+    "11323": "Smederevo",
+    "11324": "Smederevo",
+    "11325": "Smederevo",
+    "11326": "Smederevo",
+    "11327": "Smederevo",
+    "11328": "Smederevo",
+    "11329": "Smederevo",
+    "11400": "Mladenovac",
+    "11500": "Obrenovac",
+    "12000": "Požarevac",
+    "12208": "Kostolac",
+    "12220": "Veliko Gradište",
+    "12240": "Golubac",
+    "12300": "Petrovac na Mlavi",
+    "12318": "Ribare",
+    "14000": "Valjevo",
+    "14224": "Ljig",
+    "14240": "Ljig",
+    "15000": "Šabac",
+    "15300": "Loznica",
+    "15320": "Koceljeva",
+    "16000": "Leskovac",
+    "17500": "Vranje",
+    "17535": "Klisura",
+    "18000": "Niš",
+    "18103": "Niš",
+    "18106": "Niš",
+    "18108": "Niš",
+    "18109": "Niš",
+    "18110": "Niš",
+    "18116": "Niš",
+    "18120": "Niš",
+    "18205": "Niška Banja",
+    "18220": "Aleksinac",
+    "18300": "Pirot",
+    "18400": "Prokuplje",
+    "18403": "Velika Plana",
+    "18404": "Velika Plana",
+    "18420": "Blace",
+    "19000": "Zaječar",
+    "19210": "Bor",
+    "19300": "Negotin",
+    "21000": "Novi Sad",
+    "21201": "Petrovaradin",
+    "21203": "Veternik",
+    "21205": "Sremski Karlovci",
+    "21208": "Sremska Kamenica",
+    "21209": "Bukovac",
+    "21211": "Kisač",
+    "21212": "Stepanovićevo",
+    "21213": "Zmajevo",
+    "21214": "Kovilj",
+    "21215": "Turija",
+    "21216": "Nadalj",
+    "21217": "Begeč",
+    "21218": "Kovilj",
+    "21219": "Bačko Gradište",
+    "21300": "Beočin",
+    "22000": "Sremska Mitrovica",
+    "22201": "Ruma",
+    "22300": "Stara Pazova",
+    "22320": "Inđija",
+    "22330": "Nova Pazova",
+    "22400": "Ruma",
+    "23000": "Zrenjanin",
+    "24000": "Subotica",
+    "25000": "Sombor",
+    "26000": "Pančevo",
+    "26212": "Kačarevo",
+    "26220": "Kovin",
+    "26300": "Vršac",
+    "31000": "Užice",
+    "32000": "Čačak",
+    "32200": "Svilojevo",
+    "34000": "Kragujevac",
+    "34204": "Divostin",
+    "35000": "Jagodina",
+    "35250": "Paraćin",
+    "36000": "Kraljevo",
+    "36300": "Novi Pazar",
+    "37000": "Kruševac",
+    "37201": "Kruševac",
+    "37240": "Trstenik",
+    "37260": "Varvarin",
+    "38220": "Kosovska Mitrovica"
+  },
+  "extra_cities": [
+    {
+      "name": "Novi Beograd",
+      "postal": "11070",
+      "aliases": [
+        "novi beograd",
+        "new belgrade"
+      ]
+    },
+    {
+      "name": "Žagubica",
+      "postal": "12320",
+      "aliases": [
+        "zagubica",
+        "ribare zagubica"
+      ]
+    },
+    {
+      "name": "Kačarevo",
+      "postal": "26212",
+      "aliases": [
+        "kacarevo"
+      ]
+    },
+    {
+      "name": "Pančevo",
+      "postal": "26000",
+      "aliases": [
+        "pancevo"
+      ]
+    },
+    {
+      "name": "Modran",
+      "aliases": [
+        "modran bb"
+      ]
+    },
+    {
+      "name": "Sremska Mitrovica",
+      "postal": "22000",
+      "aliases": [
+        "mitrovica",
+        "macvanska mitrovica",
+        "sremska mitrovica"
+      ]
+    },
+    {
+      "name": "Mrcajevci",
+      "aliases": [
+        "mrcajevci"
+      ]
+    },
+    {
+      "name": "Velika Plana",
+      "postal": "18403",
+      "aliases": [
+        "velika plana"
+      ]
+    },
+    {
+      "name": "Paraćin",
+      "postal": "35250",
+      "aliases": [
+        "paracin"
+      ]
+    },
+    {
+      "name": "Požarevac",
+      "postal": "12000",
+      "aliases": [
+        "pozarevac"
+      ]
+    },
+    {
+      "name": "Šabac",
+      "postal": "15000",
+      "aliases": [
+        "sabac"
+      ]
+    },
+    {
+      "name": "Beočin",
+      "postal": "21300",
+      "aliases": [
+        "beocin"
+      ]
+    },
+    {
+      "name": "Divostin",
+      "postal": "34204",
+      "aliases": [
+        "divostin"
+      ]
+    },
+    {
+      "name": "Kragujevac",
+      "postal": "34000",
+      "aliases": [
+        "kragujevac"
+      ]
+    },
+    {
+      "name": "Kraljevo",
+      "postal": "36000",
+      "aliases": [
+        "kraljevo",
+        "zica"
+      ]
+    },
+    {
+      "name": "Niš",
+      "postal": "18000",
+      "aliases": [
+        "nis",
+        "nisa"
+      ]
+    },
+    {
+      "name": "Ljig",
+      "postal": "14240",
+      "aliases": [
+        "ljig"
+      ]
+    },
+    {
+      "name": "Vranje",
+      "postal": "17500",
+      "aliases": [
+        "vranje"
+      ]
+    },
+    {
+      "name": "Prokuplje",
+      "postal": "18400",
+      "aliases": [
+        "prokuplje"
+      ]
+    },
+    {
+      "name": "Pirot",
+      "postal": "18300",
+      "aliases": [
+        "pirot"
+      ]
+    },
+    {
+      "name": "Lozovik",
+      "postal": "11317",
+      "aliases": [
+        "lozovik"
+      ]
+    },
+    {
+      "name": "Nova Pazova",
+      "postal": "22330",
+      "aliases": [
+        "nova pazova"
+      ]
+    },
+    {
+      "name": "Svilojevo",
+      "postal": "32200",
+      "aliases": [
+        "svilojevo"
+      ]
+    },
+    {
+      "name": "Klisura",
+      "postal": "17535",
+      "aliases": [
+        "klisura"
+      ]
+    },
+    {
+      "name": "Cvetanovac",
+      "aliases": [
+        "selo cvetanovac"
+      ]
+    },
+    {
+      "name": "Meljanica",
+      "postal": "36103",
+      "aliases": [
+        "meljanica"
+      ]
+    },
+    {
+      "name": "Kruševac",
+      "postal": "37000",
+      "aliases": [
+        "krusevac",
+        "kruševac"
+      ]
+    },
+    {
+      "name": "Gornji Milanovac",
+      "postal": "32300",
+      "aliases": [
+        "gornji milanovac",
+        "gornjomilanovacka"
+      ]
+    },
+    {
+      "name": "Čačak",
+      "postal": "32000",
+      "aliases": [
+        "cacak"
+      ]
+    },
+    {
+      "name": "Subotica",
+      "postal": "24000",
+      "aliases": [
+        "subotica"
+      ]
+    },
+    {
+      "name": "Zrenjanin",
+      "postal": "23000",
+      "aliases": [
+        "zrenjanin"
+      ]
+    },
+    {
+      "name": "Leskovac",
+      "postal": "16000",
+      "aliases": [
+        "leskovac"
+      ]
+    },
+    {
+      "name": "Jagodina",
+      "postal": "35000",
+      "aliases": [
+        "jagodina"
+      ]
+    },
+    {
+      "name": "Valjevo",
+      "postal": "14000",
+      "aliases": [
+        "valjevo"
+      ]
+    },
+    {
+      "name": "Užice",
+      "postal": "31000",
+      "aliases": [
+        "uzice"
+      ]
+    },
+    {
+      "name": "Sombor",
+      "postal": "25000",
+      "aliases": [
+        "sombor"
+      ]
+    },
+    {
+      "name": "Zaječar",
+      "postal": "19000",
+      "aliases": [
+        "zajecar"
+      ]
+    },
+    {
+      "name": "Negotin",
+      "postal": "19300",
+      "aliases": [
+        "negotin"
+      ]
+    },
+    {
+      "name": "Vršac",
+      "postal": "26300",
+      "aliases": [
+        "vrsac"
+      ]
+    },
+    {
+      "name": "Ruma",
+      "postal": "22400",
+      "aliases": [
+        "ruma"
+      ]
+    },
+    {
+      "name": "Inđija",
+      "postal": "22320",
+      "aliases": [
+        "indjija",
+        "injija"
+      ]
+    },
+    {
+      "name": "Stara Pazova",
+      "postal": "22300",
+      "aliases": [
+        "stara pazova"
+      ]
+    },
+    {
+      "name": "Aleksinac",
+      "postal": "18220",
+      "aliases": [
+        "aleksinac"
+      ]
+    },
+    {
+      "name": "Bor",
+      "postal": "19210",
+      "aliases": [
+        "bor"
+      ]
+    },
+    {
+      "name": "Novi Sad",
+      "postal": "21000",
+      "aliases": [
+        "novi sad"
+      ]
+    },
+    {
+      "name": "Beograd",
+      "postal": "11000",
+      "aliases": [
+        "beograd",
+        "belgrade"
+      ]
+    },
+    {
+      "name": "Smederevo",
+      "postal": "11300",
+      "aliases": [
+        "smederevo"
+      ]
+    }
+  ]
+}

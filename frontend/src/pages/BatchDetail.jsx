@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
 import {
-  ArrowLeft, CheckSquare, ChevronDown, ListChecks, RefreshCw, Rocket, Save, Trash2, X, UserPlus, ClipboardList,
+  ArrowLeft, CheckSquare, ChevronDown, ClipboardList, Copy, Download, ListChecks, MoreVertical, Package, RefreshCw, Rocket, Save, Trash2, X, UserPlus, RotateCw,
 } from "lucide-react";
 import {
-  api, formatDate, isLeadTrackable, ORDER_ID_LENGTH, ORDER_ID_PLACEHOLDER, trackCardClass, TRACKING_SCHEDULE_LABEL, validateOrderId,
+  api, formatDate, isLeadTrackable, ORDER_ID_LENGTH, ORDER_ID_PLACEHOLDER, trackCardClass, validateOrderId,
 } from "../api";
 import { useToast } from "../context/ToastContext";
 import { useI18n } from "../context/I18nContext";
 import { useSearchIndex } from "../context/SearchIndexContext";
 import StatusPill from "../components/StatusPill";
+import StatusDot from "../components/StatusDot";
+import CampaignPanel from "../components/CampaignPanel";
+import SelectMenu from "../components/SelectMenu";
+import LeadInlineEdit from "../components/LeadInlineEdit";
 import ActionMenu from "../components/ActionMenu";
 import PaginationBar from "../components/PaginationBar";
 import { AddLeadsSheet, BulkIdsSheet, FILTER_CHIPS, filterLeadsByChip } from "../components/BatchSheets";
+import { downloadTextFile, formatLeadsExport } from "../leadFormat";
 
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
@@ -31,6 +36,10 @@ export default function BatchDetail() {
   const [selected, setSelected] = useState(new Set());
   const [expanded, setExpanded] = useState(new Set());
   const [batchName, setBatchName] = useState("");
+  const [productId, setProductId] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [adSpendUsd, setAdSpendUsd] = useState("");
+  const [boostDays, setBoostDays] = useState("");
   const [draftIds, setDraftIds] = useState({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -50,11 +59,20 @@ export default function BatchDetail() {
     const data = await api(`/batches/${id}`);
     setBatch(data);
     setBatchName(data.name);
+    setProductId(data.product_id ?? data.product?.id ?? null);
+    setAdSpendUsd(data.ad_spend_usd != null ? String(data.ad_spend_usd) : "");
+    setBoostDays(data.boost_days != null ? String(data.boost_days) : "");
     const drafts = {};
     data.leads.forEach((l) => { drafts[l.id] = l.order_id || ""; });
     setDraftIds(drafts);
     refreshSearch();
   }, [id, refreshSearch]);
+
+  useEffect(() => {
+    api("/products")
+      .then((res) => setProducts(res.products || []))
+      .catch((e) => show(e.message, "error"));
+  }, [show]);
 
   useEffect(() => {
     if (urlFilter && FILTER_CHIPS.some((c) => c.id === urlFilter)) {
@@ -132,6 +150,24 @@ export default function BatchDetail() {
   }, [persistOrderId]);
 
   const leads = batch?.leads ?? [];
+  const productOptions = useMemo(() => {
+    const opts = products.map((p) => ({
+      value: p.id,
+      label: `${p.product_code} — ${p.name}`,
+      hint: p.offer_label,
+    }));
+    const current = batch?.product;
+    if (current && !opts.some((o) => o.value === current.id)) {
+      opts.unshift({
+        value: current.id,
+        label: `${current.product_code} — ${current.name}`,
+        hint: `${t("settings.productArchived")} · ${current.offer_label}`,
+      });
+    }
+    return opts;
+  }, [products, batch?.product, t]);
+  const batchProductArchived = batch?.product && batch.product.is_active === false;
+  const savedProductId = batch?.product_id ?? batch?.product?.id ?? null;
   const filteredLeads = useMemo(
     () => filterLeadsByChip(leads, leadFilter),
     [leads, leadFilter],
@@ -150,6 +186,13 @@ export default function BatchDetail() {
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
+
+  const selectedLeads = useMemo(() => {
+    if (!batch?.leads) return [];
+    return batch.leads
+      .filter((l) => selected.has(l.id))
+      .sort((a, b) => a.sort_order - b.sort_order);
+  }, [batch, selected]);
 
   if (!batch) return <div className="text-themed-muted">{t("batch.loading")}</div>;
 
@@ -188,6 +231,15 @@ export default function BatchDetail() {
 
   const clearSelection = () => setSelected(new Set());
 
+  const toggleExpanded = (leadId) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(leadId)) next.delete(leadId);
+      else next.add(leadId);
+      return next;
+    });
+  };
+
   const handlePageSizeChange = (size) => {
     setPageSize(size);
     setPage(1);
@@ -204,27 +256,92 @@ export default function BatchDetail() {
       });
       setBatch(data);
       setSelected(new Set());
-      show(t("batch.bulkDone"));
+      if (action === "reparse") {
+        show(t("batch.reparsedOk", { count: ids.length }));
+      } else {
+        show(t("batch.bulkDone"));
+      }
+      refreshSearch();
     } catch (err) {
       show(err.message, "error");
     }
   };
 
-  const saveName = async () => {
+  const updateLeadInBatch = (updated) => {
+    setBatch((b) => {
+      if (!b) return b;
+      return { ...b, leads: b.leads.map((l) => (l.id === updated.id ? updated : l)) };
+    });
+    refreshSearch();
+  };
+
+  const copySelectedLeads = async () => {
+    const text = formatLeadsExport(selectedLeads);
+    if (!text) return;
     try {
-      await api(`/batches/${id}`, { method: "PATCH", body: JSON.stringify({ name: batchName.trim() }) });
+      await navigator.clipboard.writeText(text);
+      show(t("batch.copiedLeads", { count: selectedLeads.length }));
+    } catch {
+      show(t("batch.copyFailed"), "error");
+    }
+  };
+
+  const exportSelectedLeads = () => {
+    const text = formatLeadsExport(selectedLeads);
+    if (!text) return;
+    const safeName = (batch?.name || "batch").replace(/[^\w\-]+/g, "_").slice(0, 40);
+    downloadTextFile(text, `${safeName}-orders.txt`);
+    show(t("batch.exportedLeads", { count: selectedLeads.length }));
+  };
+
+  const saveBatchSettings = async () => {
+    try {
+      const body = { name: batchName.trim() };
+      if (adSpendUsd !== "") {
+        const spend = parseFloat(adSpendUsd);
+        if (!Number.isNaN(spend) && spend >= 0) body.ad_spend_usd = spend;
+      } else {
+        body.ad_spend_usd = 0;
+      }
+      if (boostDays !== "") {
+        const days = parseInt(boostDays, 10);
+        if (!Number.isNaN(days) && days >= 0) body.boost_days = days;
+      }
+      if (productId && productId !== savedProductId) {
+        body.product_id = productId;
+      }
+      const updated = await api(`/batches/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+      setBatch((b) => (b ? { ...b, ...updated } : b));
+      if (updated.product_id) setProductId(updated.product_id);
       show(t("batch.nameSaved"));
     } catch (e) {
       show(e.message, "error");
     }
   };
 
-  const appendLeads = async (text) => {
+  const changeProduct = async (newId) => {
+    if (!newId || newId === savedProductId) return;
+    const prev = productId;
+    setProductId(newId);
+    try {
+      const updated = await api(`/batches/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ product_id: newId }),
+      });
+      setBatch((b) => (b ? { ...b, ...updated } : b));
+      show(t("batch.productSaved"));
+    } catch (e) {
+      setProductId(prev);
+      show(e.message, "error");
+    }
+  };
+
+  const appendLeads = async ({ leadsText, skipDuplicates }) => {
     setAppendBusy(true);
     try {
       const data = await api(`/batches/${id}/leads`, {
         method: "POST",
-        body: JSON.stringify({ leads_text: text }),
+        body: JSON.stringify({ leads_text: leadsText, skip_duplicates: !!skipDuplicates }),
       });
       setBatch(data);
       const drafts = {};
@@ -232,7 +349,13 @@ export default function BatchDetail() {
       setDraftIds(drafts);
       setShowAddLeads(false);
       refreshSearch();
-      show(t("batch.ordersAdded", { count: data.leads.length - leads.length }));
+      const added = data.added_count ?? (data.leads.length - leads.length);
+      if (added > 0) setLeadFilter("no_id");
+      if (data.skipped_duplicates > 0) {
+        show(t("batch.ordersAddedSkipped", { count: added, skipped: data.skipped_duplicates }));
+      } else {
+        show(t("batch.ordersAdded", { count: added }));
+      }
     } catch (e) {
       show(e.message, "error");
     } finally {
@@ -301,7 +424,7 @@ export default function BatchDetail() {
       await api(`/batches/${id}/start-tracking`, { method: "POST" });
       await load();
       setTab("track");
-      show(t("batch.trackingEnabled", { schedule: TRACKING_SCHEDULE_LABEL }));
+      show(t("batch.trackingEnabled"));
     } catch (e) {
       show(e.message, "error");
     }
@@ -384,15 +507,51 @@ export default function BatchDetail() {
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <input
-              className="input-field max-w-md font-display text-xl font-bold"
+              className="input-field max-w-xs font-display text-lg font-semibold"
               value={batchName}
               onChange={(e) => setBatchName(e.target.value)}
             />
-            <button onClick={saveName} className="btn-secondary"><Save className="h-4 w-4" /></button>
+            <button onClick={saveBatchSettings} className="btn-secondary"><Save className="h-4 w-4" /></button>
+          </div>
+          <div className="mt-3 max-w-md">
+            <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-themed-muted">
+              <Package className="h-3.5 w-3.5" />
+              {t("newBatch.product")}
+            </label>
+            {productOptions.length > 0 ? (
+              <>
+                <SelectMenu
+                  value={productId}
+                  onChange={changeProduct}
+                  options={productOptions}
+                  icon={Package}
+                  fullWidth
+                />
+                {batchProductArchived && (
+                  <p className="mt-1 text-xs text-amber-500">{t("settings.productArchivedBatchHint")}</p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-themed-muted">
+                {t("newBatch.noProducts")}{" "}
+                <Link to="/settings" className="text-indigo-400 hover:underline">{t("nav.settings")}</Link>
+              </p>
+            )}
+          </div>
+          <div className="mt-3">
+            <CampaignPanel
+              adSpendUsd={adSpendUsd}
+              setAdSpendUsd={setAdSpendUsd}
+              boostDays={boostDays}
+              setBoostDays={setBoostDays}
+              savedSpend={batch.ad_spend_usd}
+              savedDays={batch.boost_days}
+              onSave={saveBatchSettings}
+            />
           </div>
           <p className="mt-2 text-sm text-themed-muted">
             {t("common.imported")} {formatDate(batch.imported_date)}
-            {batch.sent_date && ` · ${t("common.sent")} ${formatDate(batch.sent_date)}`}
+            {batch.sent_date && linked > 0 && ` · ${t("common.sent")} ${formatDate(batch.sent_date)}`}
             {" · "}{t("batch.ordersMeta", { total, linked })}
             {trackableCount > 0 && ` · ${t("batch.withIds", { count: trackableCount })}${notSentCount ? ` · ${t("batch.waiting", { count: notSentCount })}` : ""}`}
           </p>
@@ -404,9 +563,20 @@ export default function BatchDetail() {
                 <Save className="h-4 w-4" /> {t("batch.saveAllIds", { count: unsavedCount })}
               </button>
             )}
-            <button onClick={deleteBatch} className="btn-danger">
-              <Trash2 className="h-4 w-4" /> {t("batch.deleteBatch")}
-            </button>
+            <ActionMenu
+              label=""
+              icon={MoreVertical}
+              className="!min-h-[44px] !px-2.5"
+              items={[
+                {
+                  label: t("batch.deleteBatch"),
+                  hint: batch.name,
+                  icon: Trash2,
+                  onClick: deleteBatch,
+                  danger: true,
+                },
+              ]}
+            />
             <button
               onClick={startTracking}
               disabled={batch.status !== "tracking" && !hasTrackableOrders}
@@ -423,7 +593,8 @@ export default function BatchDetail() {
         </div>
       </div>
 
-      <div className="flex gap-2 border-b border-themed pb-px overflow-x-auto">
+      <div className="sticky top-0 z-20 -mx-3 space-y-3 border-b border-themed bg-[var(--bg)]/95 px-3 pb-3 pt-1 backdrop-blur-md sm:-mx-6 sm:px-6">
+      <div className="flex gap-2 border-b border-themed pb-px overflow-x-auto -mb-px">
         {["ids", "track"].map((tabKey) => (
           <button
             key={tabKey}
@@ -437,7 +608,7 @@ export default function BatchDetail() {
         ))}
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {FILTER_CHIPS.map(({ id, key }) => (
           <button
             key={id}
@@ -448,19 +619,22 @@ export default function BatchDetail() {
             }`}
           >
             {t(`batch.${key}`)}
+            {id === "no_id" && waitingForId > 0 && (
+              <span className="ml-1 opacity-80">({waitingForId})</span>
+            )}
           </button>
         ))}
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => setShowAddLeads(true)} className="btn-secondary !py-2 min-h-[44px]">
-          <UserPlus className="h-4 w-4" /> {t("batch.addOrders")}
-        </button>
-        {waitingForId > 0 && tab === "ids" && (
-          <button type="button" onClick={() => setShowBulkIds(true)} className="btn-secondary !py-2 min-h-[44px]">
-            <ClipboardList className="h-4 w-4" /> {t("batch.bulkIds")}
+        <div className="ml-auto flex flex-wrap gap-2">
+          <button type="button" onClick={() => setShowAddLeads(true)} className="btn-secondary !py-2 min-h-[40px] text-xs sm:text-sm">
+            <UserPlus className="h-4 w-4" /> {t("batch.addOrders")}
           </button>
-        )}
+          {waitingForId > 0 && tab === "ids" && (
+            <button type="button" onClick={() => setShowBulkIds(true)} className="btn-secondary !py-2 min-h-[40px] text-xs sm:text-sm">
+              <ClipboardList className="h-4 w-4" /> {t("batch.bulkIdsWaiting", { count: waitingForId })}
+            </button>
+          )}
+        </div>
+      </div>
       </div>
 
       {tab === "ids" && (
@@ -491,6 +665,31 @@ export default function BatchDetail() {
               ]}
             />
             <span className="text-sm text-themed-muted">{t("batch.selected", { count: selected.size })}</span>
+            <ActionMenu
+              label={t("batch.exportLeads")}
+              icon={Download}
+              disabled={!selected.size}
+              items={[
+                {
+                  label: t("batch.copyLeads"),
+                  hint: t("batch.selected", { count: selected.size }),
+                  icon: Copy,
+                  onClick: copySelectedLeads,
+                },
+                {
+                  label: t("batch.downloadLeads"),
+                  hint: ".txt",
+                  icon: Download,
+                  onClick: exportSelectedLeads,
+                },
+                {
+                  label: t("batch.reparseSelected"),
+                  hint: t("batch.selected", { count: selected.size }),
+                  icon: RotateCw,
+                  onClick: () => bulk("reparse"),
+                },
+              ]}
+            />
             <button disabled={!selected.size} onClick={() => bulk("delete")} className="btn-danger">
               <Trash2 className="h-4 w-4" /> {t("common.delete")}
             </button>
@@ -508,61 +707,73 @@ export default function BatchDetail() {
               <div
                 key={lead.id}
                 ref={isHighlighted ? highlightRef : undefined}
-                className={`grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-3 p-4 lg:grid-cols-[auto_minmax(0,1fr)_280px] ${selected.has(lead.id) ? "bg-indigo-500/5" : ""} ${isHighlighted ? "ring-2 ring-inset ring-indigo-500/50 bg-indigo-500/10" : ""}`}
+                className={`${selected.has(lead.id) ? "bg-indigo-500/5" : ""} ${isHighlighted ? "ring-2 ring-inset ring-indigo-500/50 bg-indigo-500/10" : ""}`}
               >
-                <input
-                  type="checkbox"
-                  checked={selected.has(lead.id)}
-                  onChange={(e) => {
-                    const s = new Set(selected);
-                    e.target.checked ? s.add(lead.id) : s.delete(lead.id);
-                    setSelected(s);
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleExpanded(lead.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleExpanded(lead.id);
+                    }
                   }}
-                  className="accent-indigo-500"
-                />
-                <div className="min-w-0">
-                  <button
-                    className="flex w-full min-w-0 items-center gap-2 text-left"
-                    onClick={() => {
-                      const e = new Set(expanded);
-                      e.has(lead.id) ? e.delete(lead.id) : e.add(lead.id);
-                      setExpanded(e);
-                    }}
-                  >
-                    <span className="w-6 shrink-0 text-sm text-themed-subtle">{lead.sort_order}.</span>
-                    <span className="truncate font-semibold text-themed">{lead.full_name}</span>
-                    <StatusPill status={lead.lifecycle_status} label={ts(lead.display_status || lead.lifecycle_status)} />
-                    <ChevronDown className={`ml-auto h-4 w-4 shrink-0 text-themed-subtle transition ${expanded.has(lead.id) ? "rotate-180" : ""}`} />
-                  </button>
-                  {expanded.has(lead.id) && (
-                    <div className="mt-2 space-y-0.5 pl-8 text-sm text-themed-muted">
-                      <div>{lead.street}</div>
-                      <div>{lead.city} {lead.postal_code}</div>
-                      <div>{lead.phone}</div>
-                    </div>
-                  )}
-                </div>
-                <div className="relative col-span-2 lg:col-span-1 lg:col-start-3">
+                  className="grid grid-cols-[auto_1fr] cursor-pointer items-center gap-x-3 gap-y-3 p-4 transition hover:bg-themed-hover/25 lg:grid-cols-[auto_minmax(0,1fr)_280px]"
+                >
                   <input
-                    className="input-field !py-2.5 pr-[4.75rem] font-mono text-sm"
-                    placeholder={ORDER_ID_PLACEHOLDER}
-                    maxLength={ORDER_ID_LENGTH}
-                    value={draft}
-                    onChange={(e) => handleOrderIdChange(lead.id, lead.order_id, e.target.value)}
-                    onBlur={() => {
-                      const draftVal = (draftIds[lead.id] || "").trim();
-                      const savedVal = (lead.order_id || "").trim();
-                      if (draftVal !== savedVal && !draftVal && savedVal) {
-                        persistOrderId(lead.id, "");
-                      }
+                    type="checkbox"
+                    checked={selected.has(lead.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                      const s = new Set(selected);
+                      e.target.checked ? s.add(lead.id) : s.delete(lead.id);
+                      setSelected(s);
                     }}
+                    className="accent-indigo-500"
                   />
-                  {isIdSaved && (
-                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-emerald-500/60 dark:text-emerald-400/45">
-                      {t("batch.idSaved")}
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="w-6 shrink-0 text-sm text-themed-subtle">{lead.sort_order}.</span>
+                    <StatusDot status={lead.display_status || lead.lifecycle_status} label={ts(lead.display_status || lead.lifecycle_status)} />
+                    <span className="truncate font-semibold text-themed">{lead.full_name}</span>
+                    <span className="hidden sm:inline-flex">
+                      <StatusPill status={lead.lifecycle_status} label={ts(lead.display_status || lead.lifecycle_status)} />
                     </span>
-                  )}
+                    <ChevronDown className={`ml-auto h-4 w-4 shrink-0 text-themed-subtle transition ${expanded.has(lead.id) ? "rotate-180" : ""}`} />
+                  </div>
+                  <div
+                    className="relative col-span-2 lg:col-span-1 lg:col-start-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      className="input-field !py-2.5 pr-[4.75rem] font-mono text-sm"
+                      placeholder={ORDER_ID_PLACEHOLDER}
+                      maxLength={ORDER_ID_LENGTH}
+                      value={draft}
+                      onChange={(e) => handleOrderIdChange(lead.id, lead.order_id, e.target.value)}
+                      onBlur={() => {
+                        const draftVal = (draftIds[lead.id] || "").trim();
+                        const savedVal = (lead.order_id || "").trim();
+                        if (draftVal !== savedVal && !draftVal && savedVal) {
+                          persistOrderId(lead.id, "");
+                        }
+                      }}
+                    />
+                    {isIdSaved && (
+                      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-emerald-500/60 dark:text-emerald-400/45">
+                        {t("batch.idSaved")}
+                      </span>
+                    )}
+                  </div>
                 </div>
+                {expanded.has(lead.id) && (
+                  <div
+                    className="border-t border-themed/50 px-4 pb-3 pt-2 pl-12 sm:pl-14"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <LeadInlineEdit lead={lead} onSaved={updateLeadInBatch} />
+                  </div>
+                )}
               </div>
               );
             })}
@@ -591,8 +802,7 @@ export default function BatchDetail() {
               {trackRun ? t("batch.trackingProgress") : t("batch.trackOrdersNow")}
             </button>
             <span className="text-sm text-themed-muted">
-              {TRACKING_SCHEDULE_LABEL}
-              {" · "}{t("batch.withIds", { count: trackableCount })}{notSentCount > 0 && ` · ${t("batch.waiting", { count: notSentCount })}`}
+              {t("batch.withIds", { count: trackableCount })}{notSentCount > 0 && ` · ${t("batch.waiting", { count: notSentCount })}`}
             </span>
           </div>
 
