@@ -72,6 +72,13 @@ PAKETO_ALLOW_REGISTER=0
 PAKETO_HTTPS=1
 POSTA_SECRET=<already set by install script — keep it secret>
 POSTA_DB_PATH=/data/posta.db
+
+# Optional — Telegram group notifications (auloni only)
+TELEGRAM_BOT_TOKEN=<from @BotFather>
+TELEGRAM_CHAT_ID=-5010901587
+TELEGRAM_GROUP_NAME=SnapPaketo
+TELEGRAM_USER=auloni
+PAKETO_PUBLIC_URL=https://paketo.online
 ```
 
 Restart after changes:
@@ -85,9 +92,57 @@ cd /opt/paketo && docker compose up -d --build
 With `PAKETO_ALLOW_REGISTER=0`, public signup is off. For a **fresh server**:
 
 1. Temporarily set `PAKETO_ALLOW_REGISTER=1`, restart, register once, then set back to `0`, **or**
-2. Copy your existing `data/posta.db` to the server volume (migration from local).
+2. **Copy your local database** (recommended — keeps all batches, leads, finance, products):
 
-Promote your account to admin in the DB, or use username `auloni` (auto-admin on bootstrap). Then create other users in **Admin**.
+---
+
+## 2b. Move your local data to the server (e.g. user `auloni`)
+
+Everything you added locally is in **one file**:
+
+```
+data/posta.db   (on your PC)
+```
+
+That file includes your **auloni** account (admin), all batches, orders, finance, and products.
+
+### Step 1 — Upload from Windows
+
+Stop Paketo on your PC first (optional but safer), then:
+
+```powershell
+scp C:\Users\gentk\Desktop\POSTA\data\posta.db root@YOUR_SERVER_IP:/opt/paketo/posta.db.upload
+```
+
+Use your Hetzner IP and SSH user (`root` on Hetzner).
+
+### Step 2 — Import on the server
+
+SSH into the server:
+
+```bash
+cd /opt/paketo
+sudo bash deploy/import-db.sh posta.db.upload
+rm posta.db.upload
+```
+
+This replaces the empty online database with your local one and restarts the app.
+
+### Step 3 — Log in online
+
+Open `http://YOUR_SERVER_IP:8000` and log in as **auloni** with the **same password** as locally.
+
+Notes:
+
+- **`.env` secret** on the server can differ from your PC — that only logs everyone out; **passwords still work** (they live in the DB).
+- Do this **before** other users are created on the server, or you will overwrite their data.
+- Keep a backup: `cp data/posta.db data/posta.db.backup` on your PC first.
+
+---
+
+### First admin user (without DB copy)
+
+If you start with an empty DB instead:
 
 ---
 

@@ -17,7 +17,7 @@ export default function MobileNav() {
   }
 
   return (
-    <nav className="mobile-nav md:hidden">
+    <nav className="mobile-nav md:hidden" aria-label="Main">
       {items.map(({ to, icon: Icon, label, end }) => (
         <NavLink
           key={to}
@@ -25,8 +25,8 @@ export default function MobileNav() {
           end={end}
           className={({ isActive }) => `mobile-nav-item ${isActive ? "active" : ""}`}
         >
-          <Icon className="h-5 w-5" />
-          <span>{label}</span>
+          <Icon className="h-5 w-5 shrink-0" />
+          <span className="truncate max-w-[4.5rem]">{label}</span>
         </NavLink>
       ))}
     </nav>

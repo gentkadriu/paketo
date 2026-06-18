@@ -177,7 +177,7 @@ def _units_per_order(conn, user_id: int) -> int:
 def lead_stock_deduct_units(conn, user_id: int, lead_id: int) -> int:
     row = conn.execute(
         """
-        SELECT l.stock_units, l.bundle_count, p.units_per_offer
+        SELECT l.stock_units, l.bundle_count, l.sale_product_rsd, p.units_per_offer
         FROM leads l
         JOIN batches b ON b.id = l.batch_id
         LEFT JOIN products p ON p.id = b.product_id
@@ -190,8 +190,15 @@ def lead_stock_deduct_units(conn, user_id: int, lead_id: int) -> int:
     explicit = int(row["stock_units"] or 0)
     if explicit > 0:
         return explicit
-    bundle = max(1, int(row["bundle_count"] or 1))
+    cfg = get_finance_config(conn, user_id)
     units = int(row["units_per_offer"] or 0) or _units_per_order(conn, user_id)
+    bundle = max(1, int(row["bundle_count"] or 1))
+    sale_rsd = int(row["sale_product_rsd"] or 0)
+    unit_price = int(cfg.get("sale_price_rsd", 1000))
+    if sale_rsd > unit_price:
+        from app.parser import _bundle_from_product
+
+        bundle = max(bundle, _bundle_from_product(sale_rsd))
     return bundle * units
 
 
@@ -332,21 +339,71 @@ def ensure_stock_deducted_for_order(conn, user_id: int, lead_id: int) -> None:
     )
 
 
-def cleanup_stock_ledger_noise(conn, user_id: int) -> None:
-    """Reconcile stock for active Order IDs, then purge automatic ledger noise."""
-    leads_with_id = conn.execute(
+def reconcile_user_stock(conn, user_id: int) -> int:
+    """Set stock = purchased pieces − pieces still out with courier (not final return)."""
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(stock_delta), 0) AS purchased
+        FROM finance_ledger WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+    purchased = int(row["purchased"] or 0)
+    if purchased <= 0:
+        return get_stock(conn, user_id)
+
+    leads = conn.execute(
         """
         SELECT l.id FROM leads l
         JOIN batches b ON b.id = l.batch_id
         WHERE b.user_id = ?
           AND l.order_id IS NOT NULL AND l.order_id != ''
-          AND l.lifecycle_status NOT IN ('returned', 'rejected')
         """,
         (user_id,),
     ).fetchall()
-    for row in leads_with_id:
-        ensure_stock_deducted_for_order(conn, user_id, row["id"])
 
+    committed = 0
+    for lead_row in leads:
+        units = lead_stock_deduct_units(conn, user_id, lead_row["id"])
+        committed += units
+        conn.execute(
+            """
+            UPDATE leads
+            SET stock_units_reserved = ?, stock_inventory_committed = 1
+            WHERE id = ?
+            """,
+            (units, lead_row["id"]),
+        )
+
+    for lead_row in conn.execute(
+        """
+        SELECT l.id FROM leads l
+        JOIN batches b ON b.id = l.batch_id
+        WHERE b.user_id = ?
+          AND (l.order_id IS NULL OR l.order_id = '')
+        """,
+        (user_id,),
+    ).fetchall():
+        conn.execute(
+            """
+            UPDATE leads
+            SET stock_units_reserved = 0, stock_inventory_committed = 0
+            WHERE id = ?
+            """,
+            (lead_row["id"],),
+        )
+
+    new_qty = max(0, purchased - committed)
+    conn.execute(
+        "UPDATE user_stock SET quantity = ? WHERE user_id = ?",
+        (new_qty, user_id),
+    )
+    return new_qty
+
+
+def cleanup_stock_ledger_noise(conn, user_id: int) -> None:
+    """Reconcile stock from purchases vs active shipments, then purge ledger noise."""
+    reconcile_user_stock(conn, user_id)
     purge_automatic_stock_ledger(conn, user_id)
 
 
@@ -417,12 +474,8 @@ def sync_stock_on_tracking_update(
     old_status: str | None,
     new_status: str,
 ) -> None:
-    old_status = old_status or "registered"
-    if new_status not in FINAL_RETURN_STATUSES:
-        return
-    if old_status in FINAL_RETURN_STATUSES:
-        return
-    restore_stock_for_return(conn, user_id, lead_id)
+    """Stock is reconciled from purchases vs active orders — not auto-restored on tracking."""
+    _ = (conn, user_id, lead_id, old_status, new_status)
 
 
 def sync_batch_ad_ledger(

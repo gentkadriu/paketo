@@ -67,6 +67,16 @@ _STREET_MARKERS = re.compile(
     r"\b(ul\.?|ulica|bb|br\.?|broj|steet|str\.|selo|ul\s)\b",
     re.I,
 )
+_INLINE_PRICE_TAIL = re.compile(
+    r"\b(\d{3,5})\s*(?:din(?:ara)?|rsd|mkd)?\s*$",
+    re.I,
+)
+_STANDALONE_PRICE = re.compile(r"^\s*(\d{3,5})\s*(?:din(?:ara)?|rsd)?\s*$", re.I)
+_STANDALONE_PIECES = re.compile(
+    r"^\s*(\d+)\s*(?:copa|kom(?:ada|ade|adi)?|pcs|pieces|komad)\s*$",
+    re.I,
+)
+_UL_PREFIX = re.compile(r"^ul\.?\s+", re.I)
 _NOISE = re.compile(
     r"^(?:evo\s+moje\s+adrese|moja\s+adresa|adresa\s+za\s+dostavu)\s*",
     re.I,
@@ -115,7 +125,46 @@ def _looks_like_order_mark(inner: str) -> bool:
     if _PIECE_WORDS.search(inner):
         return True
     prices = [int(x) for x in _PRICE_NUM.findall(inner)]
-    return any(p >= 1500 for p in prices)
+    return any(_is_product_price(p) for p in prices)
+
+
+def _merge_order_meta(
+    bundle_count: int,
+    stock_units: int,
+    sale_product_rsd: int,
+    bc: int,
+    su: int,
+    spr: int,
+) -> tuple[int, int, int]:
+    bundle_count = max(bundle_count, bc or 1)
+    if su > 0:
+        stock_units = max(stock_units, su)
+    if spr > 0:
+        sale_product_rsd = max(sale_product_rsd, spr)
+    return bundle_count, stock_units, sale_product_rsd
+
+
+def _is_product_price(value: int) -> bool:
+    if value < 2000:
+        return False
+    for snap in (5000, 4000, 3000, 2500, 2000):
+        if abs(value - snap) <= 120:
+            return True
+        if abs(value - _DEFAULT_DELIVERY_RSD - snap) <= 120:
+            return True
+    return False
+
+
+def _price_to_product(price: int) -> tuple[int, int, int]:
+    """Return (bundle_count, stock_units, sale_product_rsd) from a price token."""
+    if not _is_product_price(price):
+        return 1, 0, 0
+    if price >= 2500:
+        product = _product_from_total(price)
+    else:
+        product = price
+    bundle = _bundle_from_product(product)
+    return bundle, bundle * 2, product
 
 
 def _parse_order_mark(text: str) -> tuple[str, str, int, int, int]:
@@ -133,24 +182,137 @@ def _parse_order_mark(text: str) -> tuple[str, str, int, int, int]:
             pieces = int(piece_m.group(1)) if piece_m else 0
             if prices:
                 price = max(prices)
-                if price >= 2500 or (pieces and price >= 2000):
-                    product = _product_from_total(price)
-                else:
-                    product = price
-                bundle_count = _bundle_from_product(product)
-                sale_product_rsd = product
+                bc, su, spr = _price_to_product(price)
+                bundle_count, stock_units, sale_product_rsd = _merge_order_meta(
+                    bundle_count, stock_units, sale_product_rsd, bc, su, spr,
+                )
                 if pieces:
-                    stock_units = pieces
+                    stock_units = max(stock_units, pieces)
             elif pieces:
-                stock_units = pieces
-                bundle_count = max(1, pieces // 2) if pieces > 2 else 1
+                stock_units = max(stock_units, pieces)
+                bundle_count = max(bundle_count, max(1, pieces // 2) if pieces > 2 else 1)
             cleaned = cleaned.replace(match.group(0), " ").strip()
         else:
             note_bits.append(inner)
             cleaned = cleaned.replace(match.group(0), " ").strip()
 
+    piece_inline = _PIECE_WORDS.search(cleaned)
+    if piece_inline:
+        pieces = int(piece_inline.group(1))
+        stock_units = max(stock_units, pieces)
+        bundle_count = max(bundle_count, max(1, pieces // 2) if pieces > 2 else 1)
+        cleaned = (cleaned[: piece_inline.start()] + cleaned[piece_inline.end() :]).strip()
+
+    tail_m = _INLINE_PRICE_TAIL.search(cleaned)
+    if tail_m:
+        price = int(tail_m.group(1))
+        if _is_product_price(price) or tail_m.group(0).lower().strip().endswith(("din", "rsd")):
+            bc, su, spr = _price_to_product(price)
+            bundle_count, stock_units, sale_product_rsd = _merge_order_meta(
+                bundle_count, stock_units, sale_product_rsd, bc, su, spr,
+            )
+            cleaned = cleaned[: tail_m.start()].strip(" ,.-")
+
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.")
     return cleaned, "; ".join(note_bits), bundle_count, stock_units, sale_product_rsd
+
+
+def _is_napomena_line(line: str) -> bool:
+    line = line.strip()
+    if not line:
+        return False
+    if _NOTE_LINE.match(line):
+        return True
+    lower = fold_text(line)
+    return lower.startswith("napomena") or lower.startswith("beleska") or lower.startswith("note:")
+
+
+def _prepare_block_lines(lines: list[str]) -> tuple[list[str], str, int, int, int]:
+    """Extract notes and order meta from any line; return cleaned address lines."""
+    notes: list[str] = []
+    clean_lines: list[str] = []
+    bundle_count = 1
+    stock_units = 0
+    sale_product_rsd = 0
+
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        if _is_napomena_line(line):
+            notes.append(_extract_note_content(line))
+            continue
+
+        standalone_price = _STANDALONE_PRICE.match(line)
+        if standalone_price:
+            bc, su, spr = _price_to_product(int(standalone_price.group(1)))
+            bundle_count, stock_units, sale_product_rsd = _merge_order_meta(
+                bundle_count, stock_units, sale_product_rsd, bc, su, spr,
+            )
+            continue
+
+        standalone_pieces = _STANDALONE_PIECES.match(line)
+        if standalone_pieces:
+            pieces = int(standalone_pieces.group(1))
+            stock_units = max(stock_units, pieces)
+            bundle_count = max(bundle_count, max(1, pieces // 2) if pieces > 2 else 1)
+            continue
+
+        if _PARENS_ONLY.match(line):
+            inner = _extract_note_content(line)
+            if _looks_like_order_mark(inner):
+                piece_m = _PIECE_WORDS.search(inner)
+                prices = [int(x) for x in _PRICE_NUM.findall(inner)]
+                if prices:
+                    bc, su, spr = _price_to_product(max(prices))
+                    bundle_count, stock_units, sale_product_rsd = _merge_order_meta(
+                        bundle_count, stock_units, sale_product_rsd, bc, su, spr,
+                    )
+                elif piece_m:
+                    pieces = int(piece_m.group(1))
+                    stock_units = max(stock_units, pieces)
+                    bundle_count = max(bundle_count, max(1, pieces // 2))
+                continue
+            notes.append(inner)
+            continue
+
+        line = _UL_PREFIX.sub("ul. ", line)
+        cleaned, pnotes, bc, su, spr = _parse_order_mark(line)
+        if pnotes:
+            notes.append(pnotes)
+        bundle_count, stock_units, sale_product_rsd = _merge_order_meta(
+            bundle_count, stock_units, sale_product_rsd, bc, su, spr,
+        )
+        if cleaned:
+            clean_lines.append(cleaned)
+
+    return clean_lines, "; ".join(n for n in notes if n), bundle_count, stock_units, sale_product_rsd
+
+
+def _separate_notes_from_block(lines: list[str]) -> tuple[list[str], str, int, int, int]:
+    return _prepare_block_lines(lines)
+
+
+def _merge_meta_tail_blocks(blocks: list[list[str]]) -> list[list[str]]:
+    """Attach standalone price/piece/note lines to the previous lead block."""
+    merged: list[list[str]] = []
+    for lines in blocks:
+        if merged and len(lines) == 1:
+            line = lines[0].strip()
+            attach = False
+            if _STANDALONE_PRICE.match(line) or _STANDALONE_PIECES.match(line):
+                attach = True
+            elif _PARENS_ONLY.match(line):
+                inner = _extract_note_content(line)
+                attach = _looks_like_order_mark(inner)
+            elif _is_napomena_line(line):
+                attach = True
+            if attach:
+                merged[-1].extend(lines)
+                continue
+        merged.append(lines)
+    return merged
 
 
 def _merge_note_blocks(blocks: list[list[str]]) -> list[list[str]]:
@@ -162,28 +324,6 @@ def _merge_note_blocks(blocks: list[list[str]]) -> list[list[str]]:
             continue
         merged.append(lines)
     return merged
-
-
-def _separate_notes_from_block(lines: list[str]) -> tuple[list[str], str, int, int, int]:
-    lines = [ln.strip() for ln in lines if ln.strip()]
-    notes: list[str] = []
-    bundle_count = 1
-    stock_units = 0
-    sale_product_rsd = 0
-
-    while lines and _is_note_only_line(lines[-1]):
-        notes.insert(0, _extract_note_content(lines.pop()))
-
-    if lines:
-        cleaned, pnotes, bc, su, spr = _parse_order_mark(lines[0])
-        lines[0] = cleaned
-        if pnotes:
-            notes.insert(0, pnotes)
-        bundle_count = bc
-        stock_units = su
-        sale_product_rsd = spr
-
-    return lines, "; ".join(n for n in notes if n), bundle_count, stock_units, sale_product_rsd
 
 
 def _apply_lead_meta(lead: ParsedLead, notes: str, bundle_count: int, stock_units: int, sale_product_rsd: int) -> ParsedLead:
@@ -484,6 +624,10 @@ def normalize_parsed_lead(lead: ParsedLead) -> ParsedLead:
     city = clean_field_value(lead.city)
     postal = (lead.postal_code or "").strip()
     street, city, postal = resolve_address(street, city, postal)
+    bc = max(1, int(lead.bundle_count or 1))
+    su = max(0, int(lead.stock_units or 0))
+    if su <= 0 and bc > 1:
+        su = bc * 2
     return ParsedLead(
         first_name=clean_field_value(lead.first_name),
         last_name=clean_field_value(lead.last_name),
@@ -492,8 +636,8 @@ def normalize_parsed_lead(lead: ParsedLead) -> ParsedLead:
         postal_code=postal,
         phone=lead.phone,
         notes=(lead.notes or "").strip(),
-        bundle_count=max(1, int(lead.bundle_count or 1)),
-        stock_units=max(0, int(lead.stock_units or 0)),
+        bundle_count=bc,
+        stock_units=su,
         sale_product_rsd=max(0, int(lead.sale_product_rsd or 0)),
     )
 
@@ -786,7 +930,7 @@ def parse_leads_text(text: str) -> list[ParsedLead]:
 
 def parse_leads_text_detailed(text: str) -> ParseResult:
     text = _normalize_input_text(text.strip())
-    block_lines = _merge_note_blocks(_split_lead_blocks(text))
+    block_lines = _merge_note_blocks(_merge_meta_tail_blocks(_split_lead_blocks(text)))
     result = ParseResult()
 
     for index, lines in enumerate(block_lines, start=1):

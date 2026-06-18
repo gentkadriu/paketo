@@ -25,9 +25,9 @@ export default function Layout() {
   }
 
   return (
-    <div className="min-h-screen pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
+    <div className="min-h-screen overflow-x-hidden pb-[calc(3.75rem+env(safe-area-inset-bottom))] md:pb-0">
       <header className="header-bar overflow-visible">
-        <div className="mx-auto max-w-6xl px-3 py-2.5 sm:px-6 sm:py-3">
+        <div className="mx-auto max-w-6xl px-3 py-2 sm:px-6 sm:py-3">
           <div className="flex items-center justify-between gap-2 sm:gap-3">
             <button onClick={() => navigate("/")} className="flex items-center gap-2 group shrink-0 min-h-[44px]">
               <img

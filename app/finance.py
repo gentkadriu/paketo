@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-RETURN_STATUSES = frozenset({
-    "returned",
+# Final returns — count toward "Returned" and return-fee profit math.
+FINAL_RETURN_STATUSES = frozenset({"returned", "rejected"})
+
+# In transit back / AKS warehouse — show separately, not as completed returns.
+IN_PROGRESS_RETURN_STATUSES = frozenset({
     "returned_to_warehouse",
     "return_pending",
-    "rejected",
     "delivery_canceled",
 })
+
+RETURN_STATUSES = FINAL_RETURN_STATUSES | IN_PROGRESS_RETURN_STATUSES
 
 DEFAULT_CONFIG = {
     "sale_price_rsd": 1000.0,
@@ -82,8 +86,16 @@ def _lead_field(lead, key: str, default=None):
     return lead.get(key, default)
 
 
-def _bundle_count(lead) -> int:
-    return max(1, int(_lead_field(lead, "bundle_count", 1) or 1))
+def _bundle_count(lead, cfg: dict | None = None) -> int:
+    bundle = max(1, int(_lead_field(lead, "bundle_count", 1) or 1))
+    sale_rsd = int(_lead_field(lead, "sale_product_rsd", 0) or 0)
+    if cfg and sale_rsd > 0:
+        unit = int(cfg.get("sale_price_rsd", 1000))
+        if sale_rsd > unit:
+            from app.parser import _bundle_from_product
+
+            bundle = max(bundle, _bundle_from_product(sale_rsd))
+    return bundle
 
 
 def campaign_stats(
@@ -93,25 +105,33 @@ def campaign_stats(
 ) -> dict[str, Any]:
     all_leads = list(leads)
     imported_count = len(all_leads)
-    total_bundles = sum(_bundle_count(l) for l in all_leads)
+    total_bundles = sum(_bundle_count(l, cfg) for l in all_leads)
 
     pending_aks = [l for l in all_leads if not _lead_field(l, "order_id")]
     returned = [
         l for l in all_leads
-        if _lead_field(l, "lifecycle_status") in RETURN_STATUSES
+        if _lead_field(l, "lifecycle_status") in FINAL_RETURN_STATUSES
+    ]
+    return_in_progress = [
+        l for l in all_leads
+        if _lead_field(l, "lifecycle_status") in IN_PROGRESS_RETURN_STATUSES
     ]
     delivered = [
         l for l in all_leads
         if _lead_field(l, "lifecycle_status") == "delivered"
     ]
     paid = [l for l in all_leads if _lead_field(l, "payment_received_at")]
-    paid_bundles = sum(_bundle_count(l) for l in paid)
+    paid_bundles = sum(_bundle_count(l, cfg) for l in paid)
     awaiting_payment = [
         l for l in delivered if not _lead_field(l, "payment_received_at")
     ]
-    delivered_bundles = sum(_bundle_count(l) for l in delivered)
-    returned_bundles = sum(_bundle_count(l) for l in returned)
-    pending_count = max(0, total_bundles - delivered_bundles - returned_bundles)
+    delivered_bundles = sum(_bundle_count(l, cfg) for l in delivered)
+    returned_bundles = sum(_bundle_count(l, cfg) for l in returned)
+    in_progress_bundles = sum(_bundle_count(l, cfg) for l in return_in_progress)
+    pending_count = max(
+        0,
+        total_bundles - delivered_bundles - returned_bundles - in_progress_bundles,
+    )
 
     per = profit_per_success_eur(cfg)
     ret_fee = return_fee_eur(cfg)
@@ -145,6 +165,7 @@ def campaign_stats(
         "paid_bundles": paid_bundles,
         "awaiting_payment_orders": len(awaiting_payment),
         "returned_orders": len(returned),
+        "return_in_progress_orders": len(return_in_progress),
         "successful_orders": len(delivered),
         "sent_orders": imported_count - len(pending_aks),
         "ad_spend_usd": round(ad_spend_usd or 0, 2),

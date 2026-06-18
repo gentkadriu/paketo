@@ -26,6 +26,14 @@ def migrate_platform(conn) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN subscription_expires_at TEXT")
     if not _column_exists(conn, "users", "store_name"):
         conn.execute("ALTER TABLE users ADD COLUMN store_name TEXT NOT NULL DEFAULT ''")
+    if not _column_exists(conn, "users", "telegram_chat_id"):
+        conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id INTEGER")
+    if not _column_exists(conn, "users", "telegram_enabled"):
+        conn.execute("ALTER TABLE users ADD COLUMN telegram_enabled INTEGER NOT NULL DEFAULT 0")
+    if not _column_exists(conn, "users", "telegram_link_token"):
+        conn.execute("ALTER TABLE users ADD COLUMN telegram_link_token TEXT")
+    if not _column_exists(conn, "users", "telegram_link_token_at"):
+        conn.execute("ALTER TABLE users ADD COLUMN telegram_link_token_at TEXT")
 
     conn.execute(
         """
@@ -58,6 +66,13 @@ def migrate_platform(conn) -> None:
         conn.execute("ALTER TABLE batches ADD COLUMN product_id INTEGER")
 
     _bootstrap_platform(conn)
+    _bootstrap_telegram(conn)
+
+
+def _bootstrap_telegram(conn) -> None:
+    from app.telegram_bot import bootstrap_telegram_from_env
+
+    bootstrap_telegram_from_env(conn)
 
 
 def _bootstrap_platform(conn) -> None:

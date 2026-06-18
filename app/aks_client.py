@@ -35,7 +35,7 @@ DEFAULT_HEADERS = {
 _lock = threading.Lock()
 _client: httpx.Client | None = None
 _session_ready = False
-_request_delay = 0.35
+_request_delay = 0.08
 
 
 class AksTrackingError(Exception):
@@ -102,19 +102,19 @@ def track_order(order_id: str) -> dict[str, Any]:
         _ensure_session()
         client = _get_client()
 
-        response = client.post(
-            "/Tracking/GetTrackData",
-            headers={
-                "Content-Type": "application/json; charset=UTF-8",
-                "X-Requested-With": "XMLHttpRequest",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Referer": f"{BASE_URL}/Tracking/index",
-                "Origin": BASE_URL,
-            },
-            content=json.dumps(order_id),
-        )
-        response.raise_for_status()
-        time.sleep(_request_delay)
+    response = client.post(
+        "/Tracking/GetTrackData",
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": f"{BASE_URL}/Tracking/index",
+            "Origin": BASE_URL,
+        },
+        content=json.dumps(order_id),
+    )
+    response.raise_for_status()
+    time.sleep(_request_delay)
 
     try:
         payload = response.json()

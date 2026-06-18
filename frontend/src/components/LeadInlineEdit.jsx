@@ -5,6 +5,13 @@ import { useToast } from "../context/ToastContext";
 import { useI18n } from "../context/I18nContext";
 import { formatCityPostal } from "../leadFormat";
 
+const PIECE_FIELDS = ["first_name", "last_name", "street", "city", "postal_code", "phone", "notes", "stock_units"];
+
+function displayPieces(lead) {
+  if (lead.stock_units > 0) return lead.stock_units;
+  return (lead.bundle_count || 1) * 2;
+}
+
 export default function LeadInlineEdit({ lead, onSaved }) {
   const { t } = useI18n();
   const { show } = useToast();
@@ -16,6 +23,8 @@ export default function LeadInlineEdit({ lead, onSaved }) {
     city: lead.city || "",
     postal_code: lead.postal_code || "",
     phone: lead.phone || "",
+    notes: lead.notes || "",
+    stock_units: String(displayPieces(lead)),
   });
   const [busy, setBusy] = useState(false);
 
@@ -28,8 +37,21 @@ export default function LeadInlineEdit({ lead, onSaved }) {
       city: lead.city || "",
       postal_code: lead.postal_code || "",
       phone: lead.phone || "",
+      notes: lead.notes || "",
+      stock_units: String(displayPieces(lead)),
     });
-  }, [lead.id, lead.first_name, lead.last_name, lead.street, lead.city, lead.postal_code, lead.phone]);
+  }, [
+    lead.id,
+    lead.first_name,
+    lead.last_name,
+    lead.street,
+    lead.city,
+    lead.postal_code,
+    lead.phone,
+    lead.notes,
+    lead.stock_units,
+    lead.bundle_count,
+  ]);
 
   const resetDraft = () => {
     setDraft({
@@ -39,6 +61,8 @@ export default function LeadInlineEdit({ lead, onSaved }) {
       city: lead.city || "",
       postal_code: lead.postal_code || "",
       phone: lead.phone || "",
+      notes: lead.notes || "",
+      stock_units: String(displayPieces(lead)),
     });
   };
 
@@ -47,15 +71,19 @@ export default function LeadInlineEdit({ lead, onSaved }) {
     setEditing(false);
   };
 
-  const dirty = ["first_name", "last_name", "street", "city", "postal_code", "phone"].some(
-    (k) => (draft[k] || "").trim() !== (lead[k] || "").trim(),
-  );
+  const dirty = PIECE_FIELDS.some((k) => {
+    if (k === "stock_units") {
+      return parseInt(draft.stock_units, 10) !== displayPieces(lead);
+    }
+    return (draft[k] || "").trim() !== (lead[k] || "").trim();
+  });
 
   const save = async () => {
     if (!draft.first_name.trim()) {
       show(t("newBatch.enterName"), "error");
       return;
     }
+    const pieces = Math.max(0, parseInt(draft.stock_units, 10) || 0);
     setBusy(true);
     try {
       const updated = await api(`/leads/${lead.id}`, {
@@ -67,6 +95,8 @@ export default function LeadInlineEdit({ lead, onSaved }) {
           city: draft.city.trim(),
           postal_code: draft.postal_code.trim(),
           phone: draft.phone.trim(),
+          notes: draft.notes.trim(),
+          stock_units: pieces > 0 ? pieces : 2,
         }),
       });
       onSaved(updated);
@@ -79,11 +109,12 @@ export default function LeadInlineEdit({ lead, onSaved }) {
     }
   };
 
-  const field = (key, label, className = "") => (
+  const field = (key, label, className = "", type = "text") => (
     <div className={className}>
       <label className="mb-0.5 block text-[10px] uppercase tracking-wide text-themed-subtle">{label}</label>
       <input
-        className="input-field !py-1.5 text-sm"
+        type={type}
+        className="input-field !py-1.5 text-sm min-h-[40px]"
         value={draft[key]}
         onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
       />
@@ -97,17 +128,15 @@ export default function LeadInlineEdit({ lead, onSaved }) {
           <div>{lead.street || "—"}</div>
           <div>{formatCityPostal(lead) || "—"}</div>
           <div>{lead.phone || "—"}</div>
-          {(lead.bundle_count > 1 || lead.stock_units > 0 || lead.sale_product_rsd > 0) && (
-            <div className="text-indigo-400/90 text-xs">
-              {t("batch.bundleInfo", {
-                bundles: lead.bundle_count || 1,
-                pcs: lead.stock_units || (lead.bundle_count || 1) * 2,
-              })}
-              {lead.sale_product_rsd > 0 && (
-                <span> · {t("batch.bundleProductRsd", { rsd: lead.sale_product_rsd })}</span>
-              )}
-            </div>
-          )}
+          <div className="text-indigo-400/90 text-xs">
+            {t("batch.bundleInfo", {
+              bundles: lead.bundle_count || 1,
+              pcs: displayPieces(lead),
+            })}
+            {lead.sale_product_rsd > 0 && (
+              <span> · {t("batch.bundleProductRsd", { rsd: lead.sale_product_rsd })}</span>
+            )}
+          </div>
           {lead.notes && (
             <div className="text-amber-500/90 text-xs">{t("batch.notes")}: {lead.notes}</div>
           )}
@@ -115,43 +144,55 @@ export default function LeadInlineEdit({ lead, onSaved }) {
         <button
           type="button"
           onClick={() => setEditing(true)}
-          className="icon-btn !h-8 !w-8 shrink-0 text-themed-muted hover:text-themed"
+          className="icon-btn !h-9 !w-9 shrink-0 text-themed-muted hover:text-themed"
           title={t("batch.editOrder")}
           aria-label={t("batch.editOrder")}
         >
-          <Pencil className="h-3.5 w-3.5" />
+          <Pencil className="h-4 w-4" />
         </button>
       </div>
     );
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3 rounded-xl border border-themed bg-themed-hover/40 p-3 sm:p-4">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10px] text-themed-subtle">{t("batch.editFields")}</p>
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-themed-subtle">{t("batch.editFields")}</p>
         <button
           type="button"
           onClick={cancel}
-          className="icon-btn !h-7 !w-7 text-themed-muted hover:text-themed"
+          className="icon-btn !h-8 !w-8 text-themed-muted hover:text-themed"
           title={t("common.cancel")}
           aria-label={t("common.cancel")}
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2.5 sm:grid-cols-2">
         {field("first_name", t("batch.fieldFirst"))}
         {field("last_name", t("batch.fieldLast"))}
         {field("street", t("batch.fieldStreet"), "sm:col-span-2")}
         {field("city", t("batch.fieldCity"))}
         {field("postal_code", t("batch.fieldPostal"))}
         {field("phone", t("batch.fieldPhone"), "sm:col-span-2")}
+        {field("stock_units", t("batch.fieldPieces"), "sm:col-span-2", "number")}
+        <div className="sm:col-span-2">
+          <label className="mb-0.5 block text-[10px] uppercase tracking-wide text-themed-subtle">
+            {t("batch.fieldNotes")}
+          </label>
+          <textarea
+            className="input-field min-h-[72px] resize-y text-sm"
+            value={draft.notes}
+            onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+            placeholder={t("batch.fieldNotesPlaceholder")}
+          />
+        </div>
       </div>
-      <div className="flex gap-2">
-        <button type="button" onClick={save} disabled={busy || !dirty} className="btn-secondary !py-1.5 text-xs">
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={save} disabled={busy || !dirty} className="btn-primary !py-2 text-xs min-h-[40px]">
           <Save className="h-3.5 w-3.5" /> {t("common.save")}
         </button>
-        <button type="button" onClick={cancel} disabled={busy} className="btn-secondary !py-1.5 text-xs">
+        <button type="button" onClick={cancel} disabled={busy} className="btn-secondary !py-2 text-xs min-h-[40px]">
           {t("common.cancel")}
         </button>
       </div>

@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -26,6 +27,7 @@ from app.parser import (
 )
 from app.places_rs import resolve_address
 from app.scheduler import refresh_lead_tracking, start_scheduler, stop_scheduler
+from app.telegram_bot import notify_user_tracking_run
 from app.status import MANUAL_STATUSES, STATUS_LABELS, display_status, is_trackable_lead, label_for
 from app.aks_client import reset_session
 from app.finance import campaign_stats, eur_to_rsd, return_fee_eur
@@ -34,6 +36,7 @@ from app.finance_db import (
     apply_aks_settlement,
     deduct_stock_for_order,
     delete_ledger_entry,
+    ensure_stock_deducted_for_order,
     get_finance_config,
     get_stock,
     ledger_balance,
@@ -44,6 +47,7 @@ from app.finance_db import (
     sync_stock_on_tracking_update,
     cleanup_stock_ledger_noise,
     clear_stock_purchase_history,
+    lead_stock_deduct_units,
     update_ledger_entry,
 )
 from app.aks_settlement import parse_settlement_file
@@ -58,6 +62,7 @@ from app.security import (
 )
 from app.routers import admin as admin_router
 from app.routers import products as products_router
+from app.routers import telegram as telegram_router
 from app.username import normalize_username, validate_username
 from app.validators import validate_order_id
 
@@ -72,6 +77,10 @@ async def lifespan(_app: FastAPI):
         logger.warning("POSTA_SECRET is not set — use a strong random secret in production (.env).")
     init_db()
     start_scheduler()
+    from app.telegram_bot import bot_configured, setup_webhook
+    if bot_configured() and os.environ.get("PAKETO_HTTPS", "").strip() in ("1", "true", "yes"):
+        domain = os.environ.get("PAKETO_PUBLIC_URL", "https://paketo.online").strip()
+        setup_webhook(domain)
     yield
     stop_scheduler()
 
@@ -80,6 +89,7 @@ app = FastAPI(title="Paketo", lifespan=lifespan)
 app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(admin_router.router)
 app.include_router(products_router.router)
+app.include_router(telegram_router.router)
 init_db()
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
@@ -181,6 +191,10 @@ class UpdateLeadRequest(BaseModel):
     city: str | None = Field(default=None, max_length=80)
     postal_code: str | None = Field(default=None, max_length=10)
     phone: str | None = Field(default=None, min_length=9, max_length=20)
+    notes: str | None = Field(default=None, max_length=500)
+    stock_units: int | None = Field(default=None, ge=0, le=200)
+    bundle_count: int | None = Field(default=None, ge=1, le=50)
+    sale_product_rsd: int | None = Field(default=None, ge=0)
 
 
 class BulkLeadActionRequest(BaseModel):
@@ -806,6 +820,7 @@ def dashboard_batches(
 def dashboard_today(user: User):
     today = local_date(now_local())
     with get_connection() as conn:
+        cleanup_stock_ledger_noise(conn, user["id"])
         imported_today = conn.execute(
             """
             SELECT COUNT(*) FROM leads l
@@ -870,6 +885,20 @@ def dashboard_today(user: User):
             (user["id"],),
         ).fetchall()
 
+        missing_id_rows = conn.execute(
+            """
+            SELECT l.id, l.first_name, l.last_name, l.order_id, l.lifecycle_status,
+                   b.id AS batch_id, b.name AS batch_name
+            FROM leads l
+            JOIN batches b ON b.id = l.batch_id
+            WHERE b.user_id = ?
+              AND (l.order_id IS NULL OR l.order_id = '')
+            ORDER BY b.created_at DESC, l.sort_order ASC
+            LIMIT 50
+            """,
+            (user["id"],),
+        ).fetchall()
+
         out_for_delivery = conn.execute(
             """
             SELECT COUNT(*) FROM leads l
@@ -907,6 +936,17 @@ def dashboard_today(user: User):
                 "batch_name": r["batch_name"],
             }
             for r in problem_rows
+        ],
+        "missing_id_leads": [
+            {
+                "id": r["id"],
+                "full_name": f"{r['first_name']} {r['last_name']}".strip(),
+                "order_id": r["order_id"] or "",
+                "lifecycle_status": r["lifecycle_status"],
+                "batch_id": r["batch_id"],
+                "batch_name": r["batch_name"],
+            }
+            for r in missing_id_rows
         ],
     }
 
@@ -1124,7 +1164,8 @@ def finance_overview(user: User):
         for batch in batches:
             leads = conn.execute(
                 """
-                SELECT order_id, lifecycle_status, bundle_count, payment_received_at
+                SELECT order_id, lifecycle_status, bundle_count, sale_product_rsd,
+                       payment_received_at
                 FROM leads WHERE batch_id = ?
                 """,
                 (batch["id"],),
@@ -1151,10 +1192,24 @@ def finance_overview(user: User):
         avg_margin_eur = round(weighted_net / total_imported, 2) if total_imported else 0.0
         payouts = payment_summary(conn, user["id"])
 
+        committed = conn.execute(
+            """
+            SELECT l.id FROM leads l
+            JOIN batches b ON b.id = l.batch_id
+            WHERE b.user_id = ?
+              AND l.order_id IS NOT NULL AND l.order_id != ''
+            """,
+            (user["id"],),
+        ).fetchall()
+        stock_committed = sum(
+            lead_stock_deduct_units(conn, user["id"], row["id"]) for row in committed
+        )
+
     return {
         "balance_eur": balance,
         "balance_rsd": round(eur_to_rsd(balance, cfg), 0),
         "stock_quantity": stock,
+        "stock_committed": stock_committed,
         "units_per_order": int(cfg["units_per_order"]),
         "config": cfg,
         "average_margin_eur": avg_margin_eur,
@@ -1591,10 +1646,23 @@ def bulk_lead_action(batch_id: int, body: BulkLeadActionRequest, user: User):
                 conn.execute(
                     """
                     UPDATE leads SET first_name = ?, last_name = ?, street = ?, city = ?,
-                    postal_code = ?, phone = ?
+                        postal_code = ?, phone = ?, notes = ?, bundle_count = ?,
+                        stock_units = ?, sale_product_rsd = ?
                     WHERE id = ?
                     """,
-                    (parsed.first_name, parsed.last_name, street, city, postal, parsed.phone, lead_id),
+                    (
+                        parsed.first_name,
+                        parsed.last_name,
+                        street,
+                        city,
+                        postal,
+                        parsed.phone,
+                        parsed.notes,
+                        parsed.bundle_count,
+                        parsed.stock_units,
+                        parsed.sale_product_rsd,
+                        lead_id,
+                    ),
                 )
 
         _sync_batch_courier_state(conn, batch_id)
@@ -1619,24 +1687,69 @@ def update_lead(lead_id: int, body: UpdateLeadRequest, user: User):
 
     with get_connection() as conn:
         lead = _get_user_lead(conn, lead_id, user["id"])
+        cfg = get_finance_config(conn, user["id"])
+        units_per = int(cfg.get("units_per_order", 2))
+        sale_unit = int(cfg.get("sale_price_rsd", 1000))
+
         first_name = fields.get("first_name", lead["first_name"])
         last_name = fields.get("last_name", lead["last_name"] or "")
         street = fields.get("street", lead["street"] or "")
         city = fields.get("city", lead["city"] or "")
         postal = fields.get("postal_code", lead["postal_code"] or "")
         phone = fields.get("phone", lead["phone"] or "")
+        notes = fields.get("notes", lead["notes"] or "") if "notes" in fields else (lead["notes"] or "")
+
+        bundle_count = int(lead["bundle_count"] or 1)
+        stock_units = int(lead["stock_units"] or 0)
+        sale_product_rsd = int(lead["sale_product_rsd"] or 0)
+
+        if "stock_units" in fields:
+            stock_units = int(fields["stock_units"] or 0)
+        if "bundle_count" in fields:
+            bundle_count = max(1, int(fields["bundle_count"] or 1))
+        if "sale_product_rsd" in fields:
+            sale_product_rsd = max(0, int(fields["sale_product_rsd"] or 0))
+
+        if "stock_units" in fields and "bundle_count" not in fields:
+            bundle_count = max(1, round(stock_units / units_per)) if stock_units else 1
+        elif stock_units <= 0 and bundle_count > 0:
+            stock_units = bundle_count * units_per
+
+        if sale_product_rsd <= 0 and bundle_count > 1:
+            sale_product_rsd = bundle_count * sale_unit
+        elif "bundle_count" in fields and bundle_count == 1 and stock_units <= units_per:
+            sale_product_rsd = 0
+
         street, city, postal = resolve_address(street, city, postal)
         conn.execute(
             """
             UPDATE leads SET first_name = ?, last_name = ?, street = ?, city = ?,
-            postal_code = ?, phone = ?
+                postal_code = ?, phone = ?, notes = ?, bundle_count = ?,
+                stock_units = ?, sale_product_rsd = ?
             WHERE id = ?
             """,
-            (first_name, last_name, street, city, postal, phone, lead_id),
+            (
+                first_name,
+                last_name,
+                street,
+                city,
+                postal,
+                phone,
+                (notes or "").strip(),
+                bundle_count,
+                stock_units,
+                sale_product_rsd,
+                lead_id,
+            ),
         )
+        if (lead["order_id"] or "").strip():
+            ensure_stock_deducted_for_order(conn, user["id"], lead_id)
         updated = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        stock_qty = get_stock(conn, user["id"])
 
-    return _lead_row(updated)
+    result = _lead_row(updated)
+    result["stock_quantity"] = stock_qty
+    return result
 
 
 @app.patch("/api/leads/{lead_id}/order-id")
@@ -1772,7 +1885,8 @@ def reset_tracking_session(user: User):
 @app.post("/api/batches/{batch_id}/refresh-tracking")
 def refresh_tracking(batch_id: int, user: User):
     with get_connection() as conn:
-        _get_user_batch(conn, batch_id, user["id"])
+        batch = _get_user_batch(conn, batch_id, user["id"])
+        batch_name = batch["name"]
         leads = conn.execute(
             """
             SELECT * FROM leads
@@ -1783,24 +1897,55 @@ def refresh_tracking(batch_id: int, user: User):
             (batch_id,),
         ).fetchall()
 
-    results = []
-    for lead in leads:
-        ok, err = refresh_lead_tracking(lead["id"], lead["order_id"])
+    lead_rows = [dict(lead) for lead in leads]
+    changes: list[dict] = []
+
+    def _track_one(lead: dict) -> dict:
+        ok, err, change = refresh_lead_tracking(lead["id"], lead["order_id"])
+        if change:
+            changes.append(change)
         if ok:
             with get_connection() as conn:
                 updated = conn.execute(
                     "SELECT * FROM leads WHERE id = ?", (lead["id"],)
                 ).fetchone()
-            results.append({"lead_id": lead["id"], "ok": True, "lead": _lead_row(updated)})
-        else:
-            results.append({
-                "lead_id": lead["id"],
-                "ok": False,
-                "order_id": lead["order_id"],
-                "error": err or "Could not fetch status from AKS.",
-            })
+            return {"lead_id": lead["id"], "ok": True, "lead": _lead_row(updated)}
+        return {
+            "lead_id": lead["id"],
+            "ok": False,
+            "order_id": lead["order_id"],
+            "error": err or "Could not fetch status from AKS.",
+        }
 
-    return {"results": results, "total": len(results), "ok_count": sum(1 for r in results if r["ok"])}
+    results: list[dict] = []
+    workers = min(8, max(1, len(lead_rows)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_track_one, lead) for lead in lead_rows]
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    results.sort(key=lambda r: next(
+        (i for i, lead in enumerate(lead_rows) if lead["id"] == r["lead_id"]),
+        0,
+    ))
+    ok_count = sum(1 for r in results if r["ok"])
+    try:
+        notify_user_tracking_run(
+            user["id"],
+            changes,
+            ok_count,
+            len(lead_rows),
+            trigger="manual",
+            batch_name=batch_name,
+            batch_id=batch_id,
+        )
+    except Exception as exc:
+        logger.warning("Telegram manual track notify failed: %s", exc)
+    return {
+        "results": results,
+        "total": len(results),
+        "ok_count": ok_count,
+    }
 
 
 @app.post("/api/leads/{lead_id}/refresh-tracking")
@@ -1819,7 +1964,7 @@ def refresh_lead_tracking_endpoint(lead_id: int, user: User):
         if not is_trackable_lead(lead["order_id"]):
             raise HTTPException(status_code=400, detail="This order has no Order ID yet.")
 
-    ok, err = refresh_lead_tracking(lead_id, lead["order_id"])
+    ok, err, _ = refresh_lead_tracking(lead_id, lead["order_id"])
     with get_connection() as conn:
         updated = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
 

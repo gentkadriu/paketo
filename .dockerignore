@@ -4,7 +4,7 @@ frontend/dist
 .git
 .env
 posta.db
-data
+data/*.db
 __pycache__
 *.pyc
 .venv
