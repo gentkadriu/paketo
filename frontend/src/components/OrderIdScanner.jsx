@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
@@ -7,6 +7,7 @@ import { useI18n } from "../context/I18nContext";
 /** AKS receipt barcodes encode a 14-digit ID: 917 + 11 digits. */
 const AKS_ORDER_ID_RE = /^917\d{11}$/;
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
+const CAMERA_START_TIMEOUT_MS = 12000;
 
 export function extractOrderId(raw) {
   const digits = String(raw || "").replace(/\D/g, "");
@@ -61,6 +62,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
   const handled = useRef(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState("starting"); // starting | live | fallback
+  const [fallbackHint, setFallbackHint] = useState("");
 
   const finishScan = useCallback((orderId) => {
     if (navigator.vibrate) navigator.vibrate(40);
@@ -92,21 +94,49 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     document.body.style.overflow = "hidden";
     handled.current = false;
     setError("");
+    setFallbackHint("");
     setMode("starting");
     return () => { document.body.style.overflow = ""; };
   }, [open]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return undefined;
 
     let active = true;
-    let scanner = null;
+    let timeoutId = null;
+
+    const stopScanner = async () => {
+      const s = scannerRef.current;
+      scannerRef.current = null;
+      if (!s) return;
+      try { await s.stop(); } catch { /* ignore */ }
+      try { await s.clear(); } catch { /* ignore */ }
+    };
+
+    const goFallback = (hint) => {
+      if (!active) return;
+      stopScanner();
+      setFallbackHint(hint);
+      setMode("fallback");
+    };
 
     const start = async () => {
-      await new Promise((r) => setTimeout(r, 200));
-      if (!active) return;
+      if (!window.isSecureContext) {
+        goFallback(t("batch.scanNeedHttps"));
+        return;
+      }
 
-      scanner = new Html5Qrcode(regionId, { formatsToSupport: SCAN_FORMATS, verbose: false });
+      const host = document.getElementById(regionId);
+      if (!host) {
+        goFallback(t("batch.scanCameraError"));
+        return;
+      }
+
+      timeoutId = window.setTimeout(() => {
+        goFallback(t("batch.scanLiveFailed"));
+      }, CAMERA_START_TIMEOUT_MS);
+
+      const scanner = new Html5Qrcode(regionId, { formatsToSupport: SCAN_FORMATS, verbose: false });
       scannerRef.current = scanner;
 
       const onBarcode = (decodedText) => {
@@ -118,9 +148,9 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
 
       try {
         await scanner.start(
-          { facingMode: "environment" },
+          { facingMode: { ideal: "environment" } },
           {
-            fps: 12,
+            fps: 10,
             qrbox: (w, h) => ({
               width: Math.min(Math.floor(w * 0.88), 360),
               height: Math.max(88, Math.floor(Math.min(w, h) * 0.22)),
@@ -129,9 +159,11 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
           onBarcode,
           () => {},
         );
+        window.clearTimeout(timeoutId);
         if (active) setMode("live");
       } catch {
-        if (active) setMode("fallback");
+        window.clearTimeout(timeoutId);
+        goFallback(t("batch.scanCameraError"));
       }
     };
 
@@ -139,14 +171,10 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
 
     return () => {
       active = false;
-      const s = scannerRef.current;
-      if (s) {
-        s.stop().catch(() => {});
-        s.clear().catch(() => {});
-        scannerRef.current = null;
-      }
+      if (timeoutId) window.clearTimeout(timeoutId);
+      stopScanner();
     };
-  }, [open, regionId, tryDecode]);
+  }, [open, regionId, tryDecode, t]);
 
   if (!open) return null;
 
@@ -163,11 +191,9 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       </div>
 
       <div className="scanner-viewport">
-        {mode === "live" && (
-          <div id={regionId} className="scanner-region" />
-        )}
+        {/* Must exist in DOM before scanner.start() — was only rendered after "live" before. */}
+        <div id={regionId} className="scanner-region" />
 
-        {/* Positioning frame — always visible */}
         <div className="scanner-frame-wrap" aria-hidden="true">
           <div className="scanner-frame-box">
             <span className="scanner-corner scanner-corner-tl" />
@@ -181,12 +207,13 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
         {mode === "starting" && (
           <div className="scanner-loading">
             <p className="text-white">{t("batch.scanStarting")}</p>
+            <p className="mt-2 text-xs text-white/60">{t("batch.scanAllowCamera")}</p>
           </div>
         )}
 
         {mode === "fallback" && (
           <div className="scanner-fallback-panel">
-            <p className="text-white/90 text-sm text-center px-6 leading-relaxed">{t("batch.scanNeedHttps")}</p>
+            <p className="text-white/90 text-sm text-center px-6 leading-relaxed">{fallbackHint}</p>
             <input
               ref={fileRef}
               type="file"

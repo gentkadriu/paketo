@@ -264,7 +264,7 @@
     display: none !important;
   }
   .scanner-loading {
-    @apply absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white text-sm;
+    @apply absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 text-white text-sm;
   }
   .scanner-footer {
     @apply shrink-0 py-2 text-center text-[11px] text-white/40 font-mono;
