@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
@@ -7,25 +7,70 @@ import { useI18n } from "../context/I18nContext";
 /** AKS receipt barcodes encode a 14-digit ID: 917 + 11 digits. */
 const AKS_ORDER_ID_RE = /^917\d{11}$/;
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
-const CAMERA_START_TIMEOUT_MS = 12000;
+const SCANNER_REGION_ID = "paketo-barcode-scanner";
+const CAMERA_START_TIMEOUT_MS = 15000;
 
-/** Try rear camera first (phones), then front/default (laptops). */
-const CAMERA_CONSTRAINTS = [
-  { facingMode: { ideal: "environment" } },
-  { facingMode: "user" },
-  true,
-];
+const SCAN_CONFIG = {
+  fps: 10,
+  qrbox: { width: 320, height: 100 },
+  aspectRatio: 1.7777778,
+};
 
-async function startLiveScanner(regionId, config, onBarcode) {
-  let lastError = null;
-  for (const constraints of CAMERA_CONSTRAINTS) {
-    const scanner = new Html5Qrcode(regionId, { formatsToSupport: SCAN_FORMATS, verbose: false });
+async function warmUpCameraAccess() {
+  const tries = [
+    { video: { facingMode: { ideal: "environment" } } },
+    { video: { facingMode: "user" } },
+    { video: true },
+  ];
+  for (const constraints of tries) {
     try {
-      await scanner.start(constraints, config, onBarcode, () => {});
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream.getTracks().forEach((track) => track.stop());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return;
+    } catch {
+      // try next constraint set
+    }
+  }
+  throw new Error("Camera permission denied");
+}
+
+function sortCameras(cameras) {
+  return [...cameras].sort((a, b) => {
+    const score = (label) => {
+      const text = (label || "").toLowerCase();
+      if (/back|rear|environment/.test(text)) return 0;
+      if (/front|user|facetime|integrated/.test(text)) return 1;
+      return 2;
+    };
+    return score(a.label) - score(b.label);
+  });
+}
+
+async function startLiveScanner(onBarcode) {
+  await warmUpCameraAccess();
+
+  const host = document.getElementById(SCANNER_REGION_ID);
+  if (!host) throw new Error("Scanner element missing");
+
+  host.innerHTML = "";
+
+  const cameras = await Html5Qrcode.getCameras();
+  if (!cameras.length) throw new Error("No cameras found");
+
+  let lastError = null;
+  for (const camera of sortCameras(cameras)) {
+    const scanner = new Html5Qrcode(SCANNER_REGION_ID, {
+      formatsToSupport: SCAN_FORMATS,
+      verbose: false,
+    });
+    try {
+      await scanner.start(camera.id, SCAN_CONFIG, onBarcode, () => {});
       return scanner;
     } catch (err) {
       lastError = err;
       try { await scanner.clear(); } catch { /* ignore */ }
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
   throw lastError ?? new Error("Camera unavailable");
@@ -78,10 +123,10 @@ export function OrderIdScanButton({ onOpen, disabled = false, className = "" }) 
 
 export function OrderIdScannerModal({ open, onClose, onScan }) {
   const { t } = useI18n();
-  const regionId = useId().replace(/:/g, "");
   const fileRef = useRef(null);
   const scannerRef = useRef(null);
   const handled = useRef(false);
+  const startTokenRef = useRef(0);
   const [error, setError] = useState("");
   const [mode, setMode] = useState("starting"); // starting | live | fallback
   const [fallbackHint, setFallbackHint] = useState("");
@@ -98,6 +143,14 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     return true;
   }, [finishScan]);
 
+  const stopScanner = useCallback(async () => {
+    const scanner = scannerRef.current;
+    scannerRef.current = null;
+    if (!scanner) return;
+    try { await scanner.stop(); } catch { /* ignore */ }
+    try { await scanner.clear(); } catch { /* ignore */ }
+  }, []);
+
   const handlePhoto = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -111,52 +164,29 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     }
   };
 
-  useEffect(() => {
-    if (!open) return undefined;
-    document.body.style.overflow = "hidden";
-    handled.current = false;
+  const startCamera = useCallback(async () => {
+    const token = ++startTokenRef.current;
     setError("");
     setFallbackHint("");
     setMode("starting");
-    return () => { document.body.style.overflow = ""; };
-  }, [open]);
 
-  useLayoutEffect(() => {
-    if (!open) return undefined;
-
-    let active = true;
-    let timeoutId = null;
-
-    const stopScanner = async () => {
-      const s = scannerRef.current;
-      scannerRef.current = null;
-      if (!s) return;
-      try { await s.stop(); } catch { /* ignore */ }
-      try { await s.clear(); } catch { /* ignore */ }
-    };
-
-    const goFallback = (hint) => {
-      if (!active) return;
-      stopScanner();
-      setFallbackHint(hint);
+    if (!window.isSecureContext) {
+      setFallbackHint(t("batch.scanNeedHttps"));
       setMode("fallback");
-    };
+      return;
+    }
 
-    const start = async () => {
-      if (!window.isSecureContext) {
-        goFallback(t("batch.scanNeedHttps"));
-        return;
-      }
-
-      const host = document.getElementById(regionId);
-      if (!host) {
-        goFallback(t("batch.scanCameraError"));
-        return;
-      }
-
+    let timeoutId = null;
+    try {
       timeoutId = window.setTimeout(() => {
-        goFallback(t("batch.scanLiveFailed"));
+        if (token !== startTokenRef.current) return;
+        stopScanner();
+        setFallbackHint(t("batch.scanLiveFailed"));
+        setMode("fallback");
       }, CAMERA_START_TIMEOUT_MS);
+
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (token !== startTokenRef.current) return;
 
       const onBarcode = (decodedText) => {
         if (handled.current) return;
@@ -165,35 +195,36 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
         scannerRef.current?.stop().catch(() => {});
       };
 
-      try {
-        const scanner = await startLiveScanner(
-          regionId,
-          {
-            fps: 10,
-            qrbox: (w, h) => ({
-              width: Math.min(Math.floor(w * 0.88), 360),
-              height: Math.max(88, Math.floor(Math.min(w, h) * 0.22)),
-            }),
-          },
-          onBarcode,
-        );
-        scannerRef.current = scanner;
-        window.clearTimeout(timeoutId);
-        if (active) setMode("live");
-      } catch {
-        window.clearTimeout(timeoutId);
-        goFallback(t("batch.scanCameraError"));
+      const scanner = await startLiveScanner(onBarcode);
+      if (token !== startTokenRef.current) {
+        try { await scanner.stop(); } catch { /* ignore */ }
+        try { await scanner.clear(); } catch { /* ignore */ }
+        return;
       }
-    };
 
-    start();
+      window.clearTimeout(timeoutId);
+      scannerRef.current = scanner;
+      setMode("live");
+    } catch {
+      if (token !== startTokenRef.current) return;
+      window.clearTimeout(timeoutId);
+      await stopScanner();
+      setFallbackHint(t("batch.scanCameraError"));
+      setMode("fallback");
+    }
+  }, [stopScanner, t, tryDecode]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    document.body.style.overflow = "hidden";
+    handled.current = false;
+    startCamera();
     return () => {
-      active = false;
-      if (timeoutId) window.clearTimeout(timeoutId);
+      document.body.style.overflow = "";
+      startTokenRef.current += 1;
       stopScanner();
     };
-  }, [open, regionId, tryDecode, t]);
+  }, [open, startCamera, stopScanner]);
 
   if (!open) return null;
 
@@ -210,8 +241,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       </div>
 
       <div className="scanner-viewport">
-        {/* Must exist in DOM before scanner.start() — was only rendered after "live" before. */}
-        <div id={regionId} className="scanner-region" />
+        <div id={SCANNER_REGION_ID} className="scanner-region" />
 
         <div className="scanner-frame-wrap" aria-hidden="true">
           <div className="scanner-frame-box">
@@ -233,6 +263,22 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
         {mode === "fallback" && (
           <div className="scanner-fallback-panel">
             <p className="text-white/90 text-sm text-center px-6 leading-relaxed">{fallbackHint}</p>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={startCamera}
+                className="scanner-photo-btn !w-auto !px-6 !bg-white/10 !bg-none border border-white/20"
+              >
+                {t("batch.scanRetryCamera")}
+              </button>
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="scanner-photo-btn !w-auto !px-6"
+              >
+                {t("batch.scanSnapPhoto")}
+              </button>
+            </div>
             <input
               ref={fileRef}
               type="file"
@@ -241,13 +287,6 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
               className="hidden"
               onChange={handlePhoto}
             />
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              className="scanner-photo-btn mt-4 !w-auto !px-6"
-            >
-              {t("batch.scanSnapPhoto")}
-            </button>
           </div>
         )}
       </div>
