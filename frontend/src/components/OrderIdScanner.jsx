@@ -9,6 +9,28 @@ const AKS_ORDER_ID_RE = /^917\d{11}$/;
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
 const CAMERA_START_TIMEOUT_MS = 12000;
 
+/** Try rear camera first (phones), then front/default (laptops). */
+const CAMERA_CONSTRAINTS = [
+  { facingMode: { ideal: "environment" } },
+  { facingMode: "user" },
+  true,
+];
+
+async function startLiveScanner(regionId, config, onBarcode) {
+  let lastError = null;
+  for (const constraints of CAMERA_CONSTRAINTS) {
+    const scanner = new Html5Qrcode(regionId, { formatsToSupport: SCAN_FORMATS, verbose: false });
+    try {
+      await scanner.start(constraints, config, onBarcode, () => {});
+      return scanner;
+    } catch (err) {
+      lastError = err;
+      try { await scanner.clear(); } catch { /* ignore */ }
+    }
+  }
+  throw lastError ?? new Error("Camera unavailable");
+}
+
 export function extractOrderId(raw) {
   const digits = String(raw || "").replace(/\D/g, "");
   if (AKS_ORDER_ID_RE.test(digits)) return digits;
@@ -136,19 +158,16 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
         goFallback(t("batch.scanLiveFailed"));
       }, CAMERA_START_TIMEOUT_MS);
 
-      const scanner = new Html5Qrcode(regionId, { formatsToSupport: SCAN_FORMATS, verbose: false });
-      scannerRef.current = scanner;
-
       const onBarcode = (decodedText) => {
         if (handled.current) return;
         if (!tryDecode(decodedText)) return;
         handled.current = true;
-        scanner.stop().catch(() => {});
+        scannerRef.current?.stop().catch(() => {});
       };
 
       try {
-        await scanner.start(
-          { facingMode: { ideal: "environment" } },
+        const scanner = await startLiveScanner(
+          regionId,
           {
             fps: 10,
             qrbox: (w, h) => ({
@@ -157,8 +176,8 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
             }),
           },
           onBarcode,
-          () => {},
         );
+        scannerRef.current = scanner;
         window.clearTimeout(timeoutId);
         if (active) setMode("live");
       } catch {

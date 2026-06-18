@@ -61,7 +61,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(self)"
         response.headers["X-XSS-Protection"] = "0"
         if os.environ.get("PAKETO_HTTPS", "0").strip().lower() in ("1", "true", "yes"):
             response.headers["Strict-Transport-Security"] = (
