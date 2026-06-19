@@ -17,14 +17,32 @@ export async function api(path, options = {}) {
   return data;
 }
 
-export async function apiUpload(path, file) {
+export async function apiUpload(path, file, { timeoutMs = 90000 } = {}) {
   const token = localStorage.getItem("paketo_token");
   const form = new FormData();
   form.append("file", file);
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API}${path}`, { method: "POST", headers, body: form });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method: "POST",
+      headers,
+      body: form,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error("Upload timed out. Try the .xls file, or check your connection.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = data.detail;

@@ -1,6 +1,7 @@
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
-import { decodeOrderIdFromVideoFrame } from "./orderIdDecode";
+import { decodeOrderIdFromSource } from "./orderIdDecode";
+import { canvasFromVideo, preloadOcrWorker } from "./orderIdOcr";
 import { resolveOrderId } from "./orderIdScan";
 
 const ZXING_HINTS = new Map([
@@ -12,11 +13,29 @@ function supportsNativeBarcode() {
   return typeof window !== "undefined" && "BarcodeDetector" in window;
 }
 
+let decodeBusy = false;
+
+async function decodeFrame(video, applyResolved) {
+  if (decodeBusy) return false;
+  const canvas = canvasFromVideo(video);
+  if (!canvas) return false;
+  decodeBusy = true;
+  try {
+    return applyResolved(await decodeOrderIdFromSource(canvas));
+  } catch {
+    return false;
+  } finally {
+    decodeBusy = false;
+  }
+}
+
 /**
  * One video stream + every decoder we have (BarcodeDetector, ZXing, OCR).
  * Works on iOS Safari where html5-qrcode alone often misses Code 128.
  */
 export async function startLiveVideoScanner(containerId, applyResolved) {
+  preloadOcrWorker();
+
   const host = document.getElementById(containerId);
   if (!host) throw new Error("Scanner element missing");
 
@@ -60,7 +79,8 @@ export async function startLiveVideoScanner(containerId, applyResolved) {
       if (!active) return;
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
         try {
-          const codes = await detector.detect(video);
+          const canvas = canvasFromVideo(video);
+          const codes = canvas ? await detector.detect(canvas) : await detector.detect(video);
           for (const code of codes) {
             if (tryRaw(code.rawValue || "")) {
               await stop();
@@ -80,32 +100,25 @@ export async function startLiveVideoScanner(containerId, applyResolved) {
   timers.push(window.setInterval(async () => {
     if (!active || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
     try {
-      const result = await zxingReader.decodeFromVideoElement(video);
+      const canvas = canvasFromVideo(video);
+      if (!canvas) return;
+      const result = await zxingReader.decodeFromCanvas(canvas);
       if (result?.getText && tryRaw(result.getText())) {
         await stop();
       }
     } catch {
       // no barcode in frame
     }
-  }, 350));
+  }, 400));
 
   timers.push(window.setInterval(async () => {
     if (!active) return;
-    try {
-      const result = await decodeOrderIdFromVideoFrame(video);
-      if (applyResolved(result)) await stop();
-    } catch {
-      // OCR not ready yet
-    }
-  }, 1200));
+    if (await decodeFrame(video, applyResolved)) await stop();
+  }, 1500));
 
   const captureNow = async () => {
     if (!active) return false;
-    try {
-      return applyResolved(await decodeOrderIdFromVideoFrame(video));
-    } catch {
-      return false;
-    }
+    return decodeFrame(video, applyResolved);
   };
 
   return { video, stop, captureNow };

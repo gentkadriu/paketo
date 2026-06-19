@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
 import { useI18n } from "../context/I18nContext";
 import { decodeOrderIdFromFile } from "../utils/orderIdDecode";
+import { preloadOcrWorker } from "../utils/orderIdOcr";
 import { startLiveVideoScanner } from "../utils/liveScanner";
 
 export { extractOrderId, AKS_ORDER_ID_RE } from "../utils/orderIdScan";
@@ -160,6 +161,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     if (!open) return undefined;
     document.body.style.overflow = "hidden";
     handled.current = false;
+    preloadOcrWorker();
     startCamera();
     return () => {
       document.body.style.overflow = "";

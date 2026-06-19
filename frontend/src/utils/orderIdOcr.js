@@ -5,15 +5,13 @@ let workerPromise = null;
 async function getWorker() {
   if (!workerPromise) {
     workerPromise = (async () => {
-      const { createWorker } = await import("tesseract.js");
+      const { createWorker, PSM } = await import("tesseract.js");
       const worker = await createWorker("eng", 1, {
         logger: () => {},
-        workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
-        corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js",
       });
       await worker.setParameters({
-        tessedit_char_whitelist: "0123456789",
-        tessedit_pageseg_mode: "7",
+        tessedit_char_whitelist: "0123456789 ",
+        tessedit_pageseg_mode: PSM.SINGLE_LINE,
       });
       return worker;
     })();
@@ -21,15 +19,32 @@ async function getWorker() {
   return workerPromise;
 }
 
+/** Warm up Tesseract while the camera starts (first run downloads ~2 MB). */
+export function preloadOcrWorker() {
+  return getWorker().catch(() => {});
+}
+
 async function ocrCanvas(canvas) {
   const worker = await getWorker();
-  const enhanced = enhanceForOcr(canvas);
+  const enhanced = enhanceForOcr(upscaleCanvas(canvas));
   const recognize = worker.recognize(enhanced);
   const timeout = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error("ocr timeout")), 12000);
+    setTimeout(() => reject(new Error("ocr timeout")), 15000);
   });
   const { data: { text } } = await Promise.race([recognize, timeout]);
   return text;
+}
+
+function upscaleCanvas(source, scale = 2) {
+  const w = Math.max(1, Math.floor(source.width * scale));
+  const h = Math.max(1, Math.floor(source.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(source, 0, 0, w, h);
+  return canvas;
 }
 
 function cropCanvas(source, sx, sy, sw, sh) {
@@ -62,7 +77,7 @@ function ocrRegionsForSource(width, height) {
     { x: width * 0.05, y: height * 0.38, w: width * 0.9, h: height * 0.32 },
     { x: 0, y: height * 0.52, w: width, h: height * 0.38 },
     { x: width * 0.05, y: height * 0.62, w: width * 0.9, h: height * 0.22 },
-    { x: 0, y: height * 0.3, w: width, h: height * 0.55 },
+    { x: 0, y: height * 0.28, w: width, h: height * 0.58 },
   ];
 }
 
@@ -104,6 +119,18 @@ export async function resolveOrderIdFromVideoFrame(video) {
 export function enhancedCanvasFromSource(source) {
   const width = source.videoWidth || source.naturalWidth || source.width;
   const height = source.videoHeight || source.naturalHeight || source.height;
+  if (!width || !height) return null;
   const canvas = cropCanvas(source, 0, 0, width, height);
-  return enhanceForOcr(canvas);
+  return enhanceForOcr(upscaleCanvas(canvas));
+}
+
+export function canvasFromVideo(video) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+  return canvas;
 }

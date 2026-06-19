@@ -580,10 +580,28 @@ def _find_lead_by_order_id(conn, user_id: int, order_id: str):
     ).fetchone()
 
 
-def _settlement_line_preview(conn, user_id: int, line, cfg: dict) -> dict:
+def _find_leads_by_order_ids(conn, user_id: int, order_ids: list[str]) -> dict:
+    unique = list(dict.fromkeys(order_ids))
+    if not unique:
+        return {}
+    placeholders = ",".join("?" * len(unique))
+    rows = conn.execute(
+        f"""
+        SELECT l.*, b.name AS batch_name
+        FROM leads l
+        JOIN batches b ON b.id = l.batch_id
+        WHERE b.user_id = ? AND l.order_id IN ({placeholders})
+        """,
+        (user_id, *unique),
+    ).fetchall()
+    return {row["order_id"]: row for row in rows}
+
+
+def _settlement_line_preview(conn, user_id: int, line, cfg: dict, lead=None) -> dict:
     from app.aks_settlement import settlement_product_rsd
 
-    lead = _find_lead_by_order_id(conn, user_id, line.order_id)
+    if lead is None:
+        lead = _find_lead_by_order_id(conn, user_id, line.order_id)
     bundle = max(1, int(lead["bundle_count"] or 1)) if lead else 0
     product_rsd = settlement_product_rsd(
         line.aks_amount_rsd,
@@ -616,7 +634,11 @@ def _settlement_line_preview(conn, user_id: int, line, cfg: dict) -> dict:
 
 
 def preview_aks_settlement(conn, user_id: int, parsed, cfg: dict) -> dict:
-    rows = [_settlement_line_preview(conn, user_id, line, cfg) for line in parsed.lines]
+    lead_map = _find_leads_by_order_ids(conn, user_id, [line.order_id for line in parsed.lines])
+    rows = [
+        _settlement_line_preview(conn, user_id, line, cfg, lead=lead_map.get(line.order_id))
+        for line in parsed.lines
+    ]
     ready = [r for r in rows if r["status"] == "ready"]
     return {
         "settlement_ref": parsed.settlement_ref,

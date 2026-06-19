@@ -10,8 +10,10 @@ AKS_COURIER_FEE_RSD = 490.0
 ORDER_ID_RE = re.compile(r"917\d{11}")
 SETTLEMENT_REF_RE = re.compile(r"Specifikacija[:\s]+(\d+)", re.I)
 SETTLEMENT_DATE_RE = re.compile(r"na dan\s+(\d{2}\.\d{2}\.\d{4})", re.I)
+# Serbian PDFs: 1650.00, 1650,00, or 1.650,00
+PDF_AMOUNT_RE = r"(?:\d{1,3}(?:\.\d{3})*,\d{2}|\d+[.,]\d{2})"
 PDF_LINE_RE = re.compile(
-    r"(917\d{11}).*?(\d+\.\d{2})",
+    rf"(917\d{{11}}).*?({PDF_AMOUNT_RE})",
 )
 
 
@@ -61,8 +63,37 @@ def _ref_from_filename(filename: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _detect_file_ext(filename: str, content: bytes) -> str:
+    name = (filename or "").lower()
+    if content[:4] == b"%PDF":
+        return "pdf"
+    if content[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return "xls"
+    if content[:2] == b"PK":
+        return "xlsx"
+    if "." in name:
+        return name.rsplit(".", 1)[-1]
+    return ""
+
+
+def _parse_amount(raw: str) -> float | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if "," in text and "." in text:
+        normalized = text.replace(".", "").replace(",", ".")
+    elif "," in text:
+        normalized = text.replace(",", ".")
+    else:
+        normalized = text
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
 def parse_settlement_file(filename: str, content: bytes) -> ParsedSettlement:
-    ext = (filename or "").lower().rsplit(".", 1)[-1]
+    ext = _detect_file_ext(filename, content)
     if ext == "xls":
         parsed = _parse_xls(content, filename)
     elif ext == "xlsx":
@@ -159,11 +190,83 @@ def _parse_spreadsheet_rows(rows: list[list[str]], filename: str) -> ParsedSettl
     )
 
 
-def _parse_pdf(content: bytes, filename: str) -> ParsedSettlement:
-    from pypdf import PdfReader
+def _pdf_line_from_match(raw_line: str, order_id: str, amount_raw: str) -> SettlementLine | None:
+    aks_amount = _parse_amount(amount_raw)
+    if aks_amount is None or aks_amount <= 0:
+        return None
+    payer = ""
+    after_amount = raw_line.split(amount_raw, 1)
+    if len(after_amount) > 1:
+        payer = after_amount[1].strip().split("  ")[0].strip()
+    return SettlementLine(
+        order_id=order_id,
+        payer_name=payer,
+        aks_amount_rsd=round(aks_amount, 2),
+    )
 
-    reader = PdfReader(io.BytesIO(content))
+
+def _extract_pdf_lines(text: str) -> list[SettlementLine]:
+    lines: list[SettlementLine] = []
+    seen: set[str] = set()
+
+    for raw_line in text.splitlines():
+        match = PDF_LINE_RE.search(raw_line)
+        if not match:
+            continue
+        order_id = match.group(1)
+        if order_id in seen:
+            continue
+        row = _pdf_line_from_match(raw_line, order_id, match.group(2))
+        if not row:
+            continue
+        seen.add(order_id)
+        lines.append(row)
+
+    if lines:
+        return lines
+
+    # Some AKS PDFs break rows across lines — pair each ID with the next amount in the text.
+    amount_re = re.compile(PDF_AMOUNT_RE)
+    for order_id in ORDER_ID_RE.findall(text):
+        if order_id in seen:
+            continue
+        start = text.find(order_id)
+        if start < 0:
+            continue
+        window = text[start : start + 120]
+        amount_match = amount_re.search(window[len(order_id) :])
+        if not amount_match:
+            continue
+        aks_amount = _parse_amount(amount_match.group(0))
+        if aks_amount is None or aks_amount <= 0:
+            continue
+        seen.add(order_id)
+        lines.append(
+            SettlementLine(
+                order_id=order_id,
+                payer_name="",
+                aks_amount_rsd=round(aks_amount, 2),
+            )
+        )
+    return lines
+
+
+def _parse_pdf(content: bytes, filename: str) -> ParsedSettlement:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ValueError(
+            "PDF support is missing on the server. Upload the .xls or .xlsx settlement instead."
+        ) from exc
+
+    reader = PdfReader(io.BytesIO(content), strict=False)
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    if not text.strip():
+        raise ValueError(
+            "This PDF has no readable text (scanned image). "
+            "Download the .xls or .xlsx specifikacija from AKS email instead."
+        )
+
     settlement_ref = ""
     ref_match = SETTLEMENT_REF_RE.search(text)
     if ref_match:
@@ -173,29 +276,7 @@ def _parse_pdf(content: bytes, filename: str) -> ParsedSettlement:
 
     date_match = SETTLEMENT_DATE_RE.search(text)
     settlement_date = date_match.group(1) if date_match else None
-
-    lines: list[SettlementLine] = []
-    seen: set[str] = set()
-    for raw_line in text.splitlines():
-        match = PDF_LINE_RE.search(raw_line)
-        if not match:
-            continue
-        order_id = match.group(1)
-        if order_id in seen:
-            continue
-        seen.add(order_id)
-        aks_amount = float(match.group(2))
-        payer = ""
-        after_amount = raw_line.split(match.group(2), 1)
-        if len(after_amount) > 1:
-            payer = after_amount[1].strip().split("  ")[0].strip()
-        lines.append(
-            SettlementLine(
-                order_id=order_id,
-                payer_name=payer,
-                aks_amount_rsd=round(aks_amount, 2),
-            )
-        )
+    lines = _extract_pdf_lines(text)
 
     return ParsedSettlement(
         settlement_ref=settlement_ref,

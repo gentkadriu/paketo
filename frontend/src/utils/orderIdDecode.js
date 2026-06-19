@@ -2,7 +2,11 @@ import { BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { mergeResolveResults, resolveOrderId } from "./orderIdScan";
-import { enhancedCanvasFromSource, resolveOrderIdFromImageSource } from "./orderIdOcr";
+import {
+  canvasFromVideo,
+  enhancedCanvasFromSource,
+  resolveOrderIdFromImageSource,
+} from "./orderIdOcr";
 
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
 const ZXING_HINTS = new Map([
@@ -36,6 +40,7 @@ async function detectBarcodeOnSource(source) {
 async function zxingDecodeSource(source) {
   try {
     const canvas = enhancedCanvasFromSource(source);
+    if (!canvas) return "";
     const reader = getZxingReader();
     const result = await reader.decodeFromCanvas(canvas);
     return result?.getText() || "";
@@ -70,38 +75,42 @@ function canvasToBlob(canvas) {
   });
 }
 
-export async function decodeOrderIdFromFile(file) {
-  const bitmap = await createImageBitmap(file);
+export async function decodeOrderIdFromSource(source) {
   const results = [];
-  try {
-    const native = await detectBarcodeOnSource(bitmap);
-    if (native) results.push(resolveOrderId(native));
 
-    const zxing = await zxingDecodeSource(bitmap);
-    if (zxing) results.push(resolveOrderId(zxing));
+  const native = await detectBarcodeOnSource(source);
+  if (native) results.push(resolveOrderId(native));
 
-    const enhanced = enhancedCanvasFromSource(bitmap);
+  const zxing = await zxingDecodeSource(source);
+  if (zxing) results.push(resolveOrderId(zxing));
+
+  const enhanced = enhancedCanvasFromSource(source);
+  if (enhanced) {
     const enhancedNative = await detectBarcodeOnSource(enhanced);
     if (enhancedNative) results.push(resolveOrderId(enhancedNative));
 
     const blob = await canvasToBlob(enhanced);
     if (blob) results.push(await html5DecodeBlob(blob));
-
-    results.push(await resolveOrderIdFromImageSource(bitmap));
-  } finally {
-    bitmap.close();
   }
+
+  results.push(await resolveOrderIdFromImageSource(source));
   return mergeResolveResults(...results);
 }
 
+export async function decodeOrderIdFromFile(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    return await decodeOrderIdFromSource(bitmap);
+  } finally {
+    bitmap.close();
+  }
+}
+
 export async function decodeOrderIdFromVideoFrame(video) {
-  const results = [];
-  const native = await detectBarcodeOnSource(video);
-  if (native) results.push(resolveOrderId(native));
-
-  const zxing = await zxingDecodeSource(video);
-  if (zxing) results.push(resolveOrderId(zxing));
-
-  results.push(await resolveOrderIdFromImageSource(video));
-  return mergeResolveResults(...results);
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return { exact: null, candidates: [] };
+  }
+  const canvas = canvasFromVideo(video);
+  if (!canvas) return { exact: null, candidates: [] };
+  return decodeOrderIdFromSource(canvas);
 }

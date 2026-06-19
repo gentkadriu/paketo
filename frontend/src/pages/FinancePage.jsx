@@ -46,6 +46,17 @@ function formatTxnAmount(tx) {
 const EDITABLE_CATEGORIES = new Set(["stock", "ads", "other", "adjustment"]);
 
 const SETTLEMENT_FILE_RE = /\.(xls|xlsx|pdf)$/i;
+const SETTLEMENT_MIME_OK = new Set([
+  "application/pdf",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]);
+
+function isSettlementFile(file) {
+  if (!file) return false;
+  if (SETTLEMENT_FILE_RE.test(file.name || "")) return true;
+  return SETTLEMENT_MIME_OK.has(file.type || "");
+}
 
 const CATEGORIES = [
   { id: "stock", key: "catStock" },
@@ -189,7 +200,7 @@ export default function FinancePage() {
 
   const handleSettlementFile = useCallback((file) => {
     if (!file) return;
-    if (!SETTLEMENT_FILE_RE.test(file.name || "")) {
+    if (!isSettlementFile(file)) {
       show(t("finance.settlementBadFile"), "error");
       return;
     }

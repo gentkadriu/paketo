@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 import os
 import re
 import unicodedata
@@ -1232,9 +1233,22 @@ async def _read_settlement_upload(file: UploadFile):
     if len(content) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 5 MB).")
     try:
-        return parse_settlement_file(file.filename, content)
+        return await asyncio.wait_for(
+            asyncio.to_thread(parse_settlement_file, file.filename, content),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=400,
+            detail="Reading this file took too long. Try the .xls or .xlsx from AKS email.",
+        ) from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read settlement file: {exc}",
+        ) from exc
 
 
 @app.post("/api/finance/settlements/preview")
