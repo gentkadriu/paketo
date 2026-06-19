@@ -1,13 +1,42 @@
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
+import { BrowserMultiFormatReader } from "@zxing/browser";
+import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { decodeOrderIdFromSource } from "./orderIdDecode";
 import { canvasFromVideo, preloadOcrWorker } from "./orderIdOcr";
 import { resolveOrderId } from "./orderIdScan";
 
-const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
+const ZXING_HINTS = new Map([
+  [DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.CODE_128]],
+  [DecodeHintType.TRY_HARDER, true],
+]);
+
+function supportsNativeBarcode() {
+  return typeof window !== "undefined" && "BarcodeDetector" in window;
+}
+
+async function openCameraStream() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Camera not supported in this browser.");
+  }
+  const attempts = [
+    { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+    { video: { facingMode: "environment" } },
+    { video: { facingMode: "user" } },
+    { video: true },
+  ];
+  let lastError = null;
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Could not open camera.");
+}
 
 let ocrBusy = false;
 
-async function runOcrPass(video, applyResolved) {
+async function decodeFrame(video, applyResolved) {
   if (ocrBusy) return false;
   const canvas = canvasFromVideo(video);
   if (!canvas) return false;
@@ -21,14 +50,9 @@ async function runOcrPass(video, applyResolved) {
   }
 }
 
-function findScannerVideo(containerId) {
-  const host = document.getElementById(containerId);
-  return host?.querySelector("video") || null;
-}
-
 /**
- * Html5Qrcode live Code 128 + parallel OCR on high-res frames.
- * Optimized for AKS thermal labels (barcode + 917… digits below).
+ * Native getUserMedia video + parallel decoders (BarcodeDetector, ZXing, OCR).
+ * Html5Qrcode camera mode is avoided — it often fails on iOS without prompting.
  */
 export async function startLiveVideoScanner(containerId, applyResolved, onStatus) {
   preloadOcrWorker();
@@ -38,83 +62,118 @@ export async function startLiveVideoScanner(containerId, applyResolved, onStatus
   if (!host) throw new Error("Scanner element missing");
   host.innerHTML = "";
 
-  const html5 = new Html5Qrcode(containerId, {
-    formatsToSupport: SCAN_FORMATS,
-    verbose: false,
-  });
+  const video = document.createElement("video");
+  video.playsInline = true;
+  video.setAttribute("playsinline", "true");
+  video.setAttribute("webkit-playsinline", "true");
+  video.muted = true;
+  video.autoplay = true;
+  video.className = "scanner-native-video";
+  host.appendChild(video);
+
+  const stream = await openCameraStream();
+  video.srcObject = stream;
+  try {
+    await video.play();
+  } catch {
+    await new Promise((resolve) => {
+      video.onloadedmetadata = () => resolve();
+    });
+    await video.play();
+  }
 
   let active = true;
-  let ocrTimer = null;
-  let fastOcrTimer = null;
+  const timers = [];
 
   const stop = async () => {
     active = false;
-    if (ocrTimer) clearInterval(ocrTimer);
-    if (fastOcrTimer) clearInterval(fastOcrTimer);
-    try {
-      if (html5.isScanning()) await html5.stop();
-    } catch { /* ignore */ }
-    try { html5.clear(); } catch { /* ignore */ }
+    timers.forEach((id) => clearInterval(id));
+    stream.getTracks().forEach((track) => track.stop());
+    video.srcObject = null;
+    host.innerHTML = "";
   };
 
-  const onDecoded = (raw) => {
-    if (!active) return;
-    if (applyResolved(resolveOrderId(raw))) {
-      stop().catch(() => {});
-    }
+  const tryRaw = (raw) => {
+    if (!active) return true;
+    return applyResolved(resolveOrderId(raw));
   };
-
-  const qrbox = (viewfinderWidth, viewfinderHeight) => ({
-    width: Math.floor(viewfinderWidth * 0.9),
-    height: Math.floor(Math.min(viewfinderHeight * 0.28, 160)),
-  });
-
-  await html5.start(
-    {
-      facingMode: { ideal: "environment" },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    },
-    {
-      fps: 14,
-      qrbox,
-      disableFlip: false,
-      aspectRatio: 1.7777778,
-    },
-    onDecoded,
-    () => {},
-  );
 
   onStatus?.("scanning");
 
-  const video = findScannerVideo(containerId);
-  if (video) {
-    fastOcrTimer = window.setInterval(async () => {
+  if (supportsNativeBarcode()) {
+    // eslint-disable-next-line no-undef
+    const detector = new BarcodeDetector({ formats: ["code_128"] });
+    const loop = async () => {
       if (!active) return;
-      const v = findScannerVideo(containerId);
-      if (!v) return;
-      if (await runOcrPass(v, applyResolved)) await stop();
-    }, 900);
-
-    ocrTimer = window.setInterval(async () => {
-      if (!active) return;
-      onStatus?.("ocr");
-      const v = findScannerVideo(containerId);
-      if (!v) return;
-      if (await runOcrPass(v, applyResolved)) await stop();
-      else onStatus?.("scanning");
-    }, 2800);
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        try {
+          const canvas = canvasFromVideo(video);
+          const target = canvas || video;
+          const codes = await detector.detect(target);
+          for (const code of codes) {
+            if (tryRaw(code.rawValue || "")) {
+              await stop();
+              return;
+            }
+          }
+        } catch {
+          // next frame
+        }
+      }
+      if (active) requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
   }
+
+  const zxingReader = new BrowserMultiFormatReader(ZXING_HINTS, 250);
+  timers.push(window.setInterval(async () => {
+    if (!active || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    try {
+      const canvas = canvasFromVideo(video);
+      if (!canvas) return;
+      const result = zxingReader.decodeFromCanvas(canvas);
+      if (result?.getText && tryRaw(result.getText())) {
+        await stop();
+      }
+    } catch {
+      // no barcode in frame
+    }
+  }, 350));
+
+  timers.push(window.setInterval(async () => {
+    if (!active) return;
+    if (await decodeFrame(video, applyResolved)) await stop();
+  }, 1000));
+
+  timers.push(window.setInterval(async () => {
+    if (!active) return;
+    onStatus?.("ocr");
+    if (await decodeFrame(video, applyResolved)) await stop();
+    else onStatus?.("scanning");
+  }, 2800));
 
   const captureNow = async () => {
     if (!active) return false;
     onStatus?.("ocr");
-    const v = findScannerVideo(containerId);
-    if (!v) return false;
-    const ok = await runOcrPass(v, applyResolved);
+    const ok = await decodeFrame(video, applyResolved);
     if (!ok) onStatus?.("scanning");
     return ok;
   };
 
-  return { video: findScannerVideo(containerId), stop, captureNow };
+  return { video, stop, captureNow };
+}
+
+export function cameraErrorMessage(err) {
+  const name = err?.name || "";
+  const msg = String(err?.message || err || "");
+  if (name === "NotAllowedError" || /permission|denied|not allowed/i.test(msg)) {
+    return "permission";
+  }
+  if (name === "NotFoundError" || /not found|no camera/i.test(msg)) {
+    return "not_found";
+  }
+  if (name === "NotReadableError" || /in use|busy/i.test(msg)) {
+    return "busy";
+  }
+  return "generic";
 }

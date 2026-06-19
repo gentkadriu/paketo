@@ -4,7 +4,7 @@ import { Camera, X } from "lucide-react";
 import { useI18n } from "../context/I18nContext";
 import { decodeOrderIdFromFile } from "../utils/orderIdDecode";
 import { preloadOcrWorker } from "../utils/orderIdOcr";
-import { startLiveVideoScanner } from "../utils/liveScanner";
+import { startLiveVideoScanner, cameraErrorMessage } from "../utils/liveScanner";
 
 export { extractOrderId, AKS_ORDER_ID_RE } from "../utils/orderIdScan";
 
@@ -120,6 +120,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     setError("");
     setFallbackHint("");
     setCandidates([]);
+    setScanStatus("");
     setMode("starting");
 
     if (!window.isSecureContext) {
@@ -127,6 +128,8 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       setMode("fallback");
       return;
     }
+
+    await stopScanner();
 
     let timeoutId = null;
     try {
@@ -141,6 +144,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       if (token !== startTokenRef.current) return;
 
       const scanner = await startLiveVideoScanner(SCANNER_REGION_ID, applyResolved, (status) => {
+        if (token !== startTokenRef.current) return;
         if (status === "ocr") setScanStatus(t("batch.scanReadingDigits"));
         else if (status === "scanning") setScanStatus(t("batch.scanAutoDetecting"));
         else setScanStatus("");
@@ -153,11 +157,15 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       window.clearTimeout(timeoutId);
       scannerRef.current = scanner;
       setMode("live");
-    } catch {
+    } catch (err) {
       if (token !== startTokenRef.current) return;
       window.clearTimeout(timeoutId);
       await stopScanner();
-      setFallbackHint(t("batch.scanCameraError"));
+      const kind = cameraErrorMessage(err);
+      if (kind === "permission") setFallbackHint(t("batch.scanPermissionDenied"));
+      else if (kind === "not_found") setFallbackHint(t("batch.scanNoCamera"));
+      else if (kind === "busy") setFallbackHint(t("batch.scanCameraBusy"));
+      else setFallbackHint(t("batch.scanCameraError"));
       setMode("fallback");
     }
   }, [applyResolved, stopScanner, t]);
