@@ -42,6 +42,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
   const [fallbackHint, setFallbackHint] = useState("");
   const [candidates, setCandidates] = useState([]);
   const [ocrBusy, setOcrBusy] = useState(false);
+  const [scanStatus, setScanStatus] = useState("");
 
   const finishScan = useCallback((orderId) => {
     if (navigator.vibrate) navigator.vibrate(40);
@@ -139,7 +140,11 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (token !== startTokenRef.current) return;
 
-      const scanner = await startLiveVideoScanner(SCANNER_REGION_ID, applyResolved);
+      const scanner = await startLiveVideoScanner(SCANNER_REGION_ID, applyResolved, (status) => {
+        if (status === "ocr") setScanStatus(t("batch.scanReadingDigits"));
+        else if (status === "scanning") setScanStatus(t("batch.scanAutoDetecting"));
+        else setScanStatus("");
+      });
       if (token !== startTokenRef.current) {
         try { await scanner.stop(); } catch { /* ignore */ }
         return;
@@ -255,6 +260,9 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       )}
 
       <p className="scanner-footer font-mono">917XXXXXXXXXXX</p>
+      {scanStatus && mode === "live" && !error && (
+        <p className="scanner-ocr-status">{scanStatus}</p>
+      )}
       {error && <p className="scanner-error">{error}</p>}
 
       <input

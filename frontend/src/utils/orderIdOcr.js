@@ -1,84 +1,79 @@
 import { mergeResolveResults, resolveOrderId } from "./orderIdScan";
+import {
+  buildScanVariants,
+  canvasFromSource,
+  canvasFromVideo,
+  cropRegion,
+  enhanceForScan,
+  scanRegionsForSize,
+  upscaleCanvas,
+} from "./orderIdVision";
+
+import workerURL from "tesseract.js/dist/worker.min.js?url";
+import coreURL from "tesseract.js-core/tesseract-core-simd-lstm.wasm.js?url";
 
 let workerPromise = null;
+let workerError = null;
 
 async function getWorker() {
+  if (workerError) throw workerError;
   if (!workerPromise) {
     workerPromise = (async () => {
       const { createWorker, PSM } = await import("tesseract.js");
       const worker = await createWorker("eng", 1, {
         logger: () => {},
+        workerPath: workerURL,
+        corePath: coreURL,
+        workerBlobURL: true,
       });
       await worker.setParameters({
-        tessedit_char_whitelist: "0123456789 ",
-        tessedit_pageseg_mode: PSM.SINGLE_LINE,
+        tessedit_char_whitelist: "0123456789",
       });
+      worker._psmModes = [PSM.SINGLE_LINE, PSM.SINGLE_BLOCK, PSM.SPARSE_TEXT];
       return worker;
-    })();
+    })().catch((err) => {
+      workerError = err;
+      workerPromise = null;
+      throw err;
+    });
   }
   return workerPromise;
 }
 
-/** Warm up Tesseract while the camera starts (first run downloads ~2 MB). */
+/** Warm up Tesseract while the camera starts (first run downloads language data). */
 export function preloadOcrWorker() {
   return getWorker().catch(() => {});
 }
 
-async function ocrCanvas(canvas) {
+export function isOcrReady() {
+  return Boolean(workerPromise) && !workerError;
+}
+
+async function ocrCanvasWithPsm(canvas, psm) {
   const worker = await getWorker();
-  const enhanced = enhanceForOcr(upscaleCanvas(canvas));
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
+  const enhanced = enhanceForScan(upscaleCanvas(canvas, 2));
   const recognize = worker.recognize(enhanced);
   const timeout = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error("ocr timeout")), 15000);
+    setTimeout(() => reject(new Error("ocr timeout")), 18000);
   });
   const { data: { text } } = await Promise.race([recognize, timeout]);
   return text;
 }
 
-function upscaleCanvas(source, scale = 2) {
-  const w = Math.max(1, Math.floor(source.width * scale));
-  const h = Math.max(1, Math.floor(source.height * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(source, 0, 0, w, h);
-  return canvas;
-}
-
-function cropCanvas(source, sx, sy, sw, sh) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.floor(sw));
-  canvas.height = Math.max(1, Math.floor(sh));
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  return canvas;
-}
-
-/** Boost contrast so faded / streaked printer digits are easier to read. */
-function enhanceForOcr(canvas) {
-  const ctx = canvas.getContext("2d");
-  const { width, height } = canvas;
-  const image = ctx.getImageData(0, 0, width, height);
-  const { data } = image;
-  for (let i = 0; i < data.length; i += 4) {
-    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    const boosted = gray < 95 ? 0 : gray > 175 ? 255 : (gray - 95) * (255 / 80);
-    const v = Math.max(0, Math.min(255, boosted));
-    data[i] = data[i + 1] = data[i + 2] = v;
+async function ocrCanvasAllModes(canvas) {
+  const worker = await getWorker();
+  const modes = worker._psmModes || ["7", "6", "11"];
+  const results = [];
+  for (const psm of modes) {
+    try {
+      const text = await ocrCanvasWithPsm(canvas, psm);
+      results.push(resolveOrderId(text));
+    } catch {
+      // try next mode
+    }
   }
-  ctx.putImageData(image, 0, 0);
-  return canvas;
-}
-
-function ocrRegionsForSource(width, height) {
-  return [
-    { x: width * 0.05, y: height * 0.38, w: width * 0.9, h: height * 0.32 },
-    { x: 0, y: height * 0.52, w: width, h: height * 0.38 },
-    { x: width * 0.05, y: height * 0.62, w: width * 0.9, h: height * 0.22 },
-    { x: 0, y: height * 0.28, w: width, h: height * 0.58 },
-  ];
+  return mergeResolveResults(...results);
 }
 
 export async function resolveOrderIdFromImageSource(source) {
@@ -86,16 +81,38 @@ export async function resolveOrderIdFromImageSource(source) {
   const height = source.videoHeight || source.naturalHeight || source.height;
   if (!width || !height) return { exact: null, candidates: [] };
 
+  const regions = scanRegionsForSize(width, height);
+  const ocrTargets = [
+    regions.digits,
+    regions.digitsWide,
+    regions.barcode,
+    regions.frame,
+    regions.lowerHalf,
+    regions.full,
+  ];
+
   const results = [];
-  for (const region of ocrRegionsForSource(width, height)) {
+  for (const region of ocrTargets) {
     try {
-      const crop = cropCanvas(source, region.x, region.y, region.w, region.h);
-      const text = await ocrCanvas(crop);
-      results.push(resolveOrderId(text));
+      const crop = cropRegion(source, region);
+      results.push(await ocrCanvasAllModes(crop));
     } catch {
-      // try next region
+      // worker not ready or timeout
     }
   }
+
+  for (const variant of buildScanVariants(source)) {
+    const vRegions = scanRegionsForSize(variant.width, variant.height);
+    for (const key of ["digits", "digitsWide", "frame"]) {
+      try {
+        const crop = cropRegion(variant, vRegions[key]);
+        results.push(await ocrCanvasAllModes(crop));
+      } catch {
+        // continue
+      }
+    }
+  }
+
   return mergeResolveResults(...results);
 }
 
@@ -117,20 +134,9 @@ export async function resolveOrderIdFromVideoFrame(video) {
 
 /** Contrast-boosted copy for barcode re-tries on damaged prints. */
 export function enhancedCanvasFromSource(source) {
-  const width = source.videoWidth || source.naturalWidth || source.width;
-  const height = source.videoHeight || source.naturalHeight || source.height;
-  if (!width || !height) return null;
-  const canvas = cropCanvas(source, 0, 0, width, height);
-  return enhanceForOcr(upscaleCanvas(canvas));
+  const canvas = canvasFromSource(source);
+  if (!canvas) return null;
+  return enhanceForScan(upscaleCanvas(canvas));
 }
 
-export function canvasFromVideo(video) {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  if (!width || !height) return null;
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext("2d").drawImage(video, 0, 0, width, height);
-  return canvas;
-}
+export { canvasFromVideo, canvasFromSource, buildScanVariants, cropRegion, scanRegionsForSize };

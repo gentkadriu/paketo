@@ -264,8 +264,20 @@
   .scanner-fallback-panel {
     @apply absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/90 px-4;
   }
-  .scanner-region img {
-    display: none !important;
+  .scanner-region #qr-shaded-region {
+    border-color: rgba(165, 180, 252, 0.85) !important;
+  }
+  .scanner-region #qr-shaded-region,
+  .scanner-region #qr-shaded-region > div {
+    border-radius: 8px;
+  }
+
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
   .scanner-loading {
     @apply absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 text-white text-sm;

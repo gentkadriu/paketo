@@ -3,7 +3,12 @@ import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { mergeResolveResults, resolveOrderId } from "./orderIdScan";
 import {
+  buildScanVariants,
   canvasFromVideo,
+  cropRegion,
+  scanRegionsForSize,
+} from "./orderIdVision";
+import {
   enhancedCanvasFromSource,
   resolveOrderIdFromImageSource,
 } from "./orderIdOcr";
@@ -16,7 +21,7 @@ const ZXING_HINTS = new Map([
 
 let zxingReader = null;
 function getZxingReader() {
-  if (!zxingReader) zxingReader = new BrowserMultiFormatReader(ZXING_HINTS, 500);
+  if (!zxingReader) zxingReader = new BrowserMultiFormatReader(ZXING_HINTS, 250);
   return zxingReader;
 }
 
@@ -24,12 +29,12 @@ function supportsNativeBarcode() {
   return typeof window !== "undefined" && "BarcodeDetector" in window;
 }
 
-async function detectBarcodeOnSource(source) {
-  if (!supportsNativeBarcode()) return null;
+async function detectBarcodeOnCanvas(canvas) {
+  if (!supportsNativeBarcode() || !canvas) return null;
   try {
     // eslint-disable-next-line no-undef
     const detector = new BarcodeDetector({ formats: ["code_128"] });
-    const codes = await detector.detect(source);
+    const codes = await detector.detect(canvas);
     if (codes.length) return codes[0].rawValue || "";
   } catch {
     // ignore
@@ -37,19 +42,22 @@ async function detectBarcodeOnSource(source) {
   return null;
 }
 
-async function zxingDecodeSource(source) {
+function zxingDecodeCanvas(canvas) {
   try {
-    const canvas = enhancedCanvasFromSource(source);
-    if (!canvas) return "";
     const reader = getZxingReader();
-    const result = await reader.decodeFromCanvas(canvas);
+    const result = reader.decodeFromCanvas(canvas);
     return result?.getText() || "";
   } catch {
     return "";
   }
 }
 
-async function html5DecodeBlob(blob) {
+async function html5DecodeCanvas(canvas) {
+  const blob = await new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), "image/jpeg", 0.92);
+  });
+  if (!blob) return { exact: null, candidates: [] };
+
   const tempId = "barcode-file-decode";
   let host = document.getElementById(tempId);
   if (!host) {
@@ -69,32 +77,49 @@ async function html5DecodeBlob(blob) {
   }
 }
 
-function canvasToBlob(canvas) {
-  return new Promise((resolve) => {
-    canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.92);
-  });
-}
-
-export async function decodeOrderIdFromSource(source) {
+async function barcodePassOnCanvas(canvas) {
   const results = [];
-
-  const native = await detectBarcodeOnSource(source);
+  const native = await detectBarcodeOnCanvas(canvas);
   if (native) results.push(resolveOrderId(native));
 
-  const zxing = await zxingDecodeSource(source);
+  const zxing = zxingDecodeCanvas(canvas);
   if (zxing) results.push(resolveOrderId(zxing));
+
+  results.push(await html5DecodeCanvas(canvas));
+  return mergeResolveResults(...results);
+}
+
+async function barcodePassOnSource(source) {
+  const results = [];
+  const variants = buildScanVariants(source);
+  const width = source.videoWidth || source.naturalWidth || source.width;
+  const height = source.videoHeight || source.naturalHeight || source.height;
+  const regions = width && height ? scanRegionsForSize(width, height) : null;
+
+  for (const variant of variants) {
+    results.push(await barcodePassOnCanvas(variant));
+    if (regions) {
+      for (const key of ["barcode", "frame", "full"]) {
+        const region = scanRegionsForSize(variant.width, variant.height)[key];
+        results.push(await barcodePassOnCanvas(cropRegion(variant, region)));
+      }
+    }
+  }
 
   const enhanced = enhancedCanvasFromSource(source);
   if (enhanced) {
-    const enhancedNative = await detectBarcodeOnSource(enhanced);
-    if (enhancedNative) results.push(resolveOrderId(enhancedNative));
-
-    const blob = await canvasToBlob(enhanced);
-    if (blob) results.push(await html5DecodeBlob(blob));
+    results.push(await barcodePassOnCanvas(enhanced));
   }
 
-  results.push(await resolveOrderIdFromImageSource(source));
   return mergeResolveResults(...results);
+}
+
+export async function decodeOrderIdFromSource(source) {
+  const [barcodeResult, ocrResult] = await Promise.all([
+    barcodePassOnSource(source),
+    resolveOrderIdFromImageSource(source),
+  ]);
+  return mergeResolveResults(barcodeResult, ocrResult);
 }
 
 export async function decodeOrderIdFromFile(file) {

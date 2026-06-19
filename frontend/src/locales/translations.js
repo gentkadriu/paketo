@@ -83,6 +83,7 @@ export const translations = {
       phaseTracking: "AKS tracking",
       phaseSent: "Sent to courier",
       phaseRegistered: "Registered",
+      todaySummary: "Today's summary",
     },
     newBatch: {
       title: "Create batch",
@@ -382,6 +383,7 @@ export const translations = {
       scanLiveHint: "Include barcode + numbers below. Damaged print? Tap Read label now.",
       scanCaptureNow: "Read label now",
       scanReadingDigits: "Reading printed numbers…",
+      scanAutoDetecting: "Scanning barcode & numbers…",
       scanPickId: "Damaged label? Pick the correct ID:",
       scanSnapPhoto: "Take photo of barcode",
       scanNeedHttps: "Live scanner needs HTTPS — use paketo.online on your phone, or take a photo below.",
@@ -521,6 +523,7 @@ export const translations = {
       phaseTracking: "Ndjekje AKS",
       phaseSent: "Dërguar te korrieri",
       phaseRegistered: "Regjistruar",
+      todaySummary: "Përmbledhja e sotme",
     },
     newBatch: {
       title: "Krijo grup",
@@ -796,6 +799,7 @@ export const translations = {
       scanLiveHint: "Mbaje barkodin shtrirë horizontalisht — mbush kornizën",
       scanCaptureNow: "Lexo etiketën tani",
       scanReadingDigits: "Duke lexuar numrat…",
+      scanAutoDetecting: "Skanoj barkodin dhe numrat…",
       scanPickId: "Etiketë e dëmtuar? Zgjidh ID-në e saktë:",
       scanSnapPhoto: "Foto e barkodit",
       scanNeedHttps: "Skaneri live kërkon HTTPS — përdor paketo.online, ose bëj foto më poshtë.",
@@ -934,6 +938,7 @@ export const translations = {
       phaseTracking: "AKS praćenje",
       phaseSent: "Poslato kuriru",
       phaseRegistered: "Registrovano",
+      todaySummary: "Današnji pregled",
     },
     newBatch: {
       title: "Nova grupa",
@@ -1106,6 +1111,7 @@ export const translations = {
       scanLiveHint: "Drži barkod ravno i horizontalno — ispuni okvir",
       scanCaptureNow: "Pročitaj nalepnicu",
       scanReadingDigits: "Čitam brojeve…",
+      scanAutoDetecting: "Skeniram barkod i brojeve…",
       scanPickId: "Oštećena nalepnica? Izaberi tačan ID:",
       scanSnapPhoto: "Slikaj barkod",
       scanNeedHttps: "Live skener treba HTTPS — koristi paketo.online, ili slikaj ispod.",
