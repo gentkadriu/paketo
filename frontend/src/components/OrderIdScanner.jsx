@@ -309,7 +309,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
           <div className="scanner-pick-sheet-inner">
             <p className="text-sm font-semibold text-white mb-1">{t("batch.scanConfirmPick")}</p>
             <p className="text-xs text-white/65 mb-3">{t("batch.scanConfirmHint")}</p>
-            <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+            <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
               {candidates.map((id) => (
                 <button
                   key={id}
