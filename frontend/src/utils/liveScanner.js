@@ -97,7 +97,7 @@ export async function startLiveVideoScanner(containerId, applyResolved) {
     } catch {
       // OCR not ready yet
     }
-  }, 2200));
+  }, 1200));
 
   const captureNow = async () => {
     if (!active) return false;

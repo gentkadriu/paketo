@@ -59,9 +59,10 @@ function enhanceForOcr(canvas) {
 
 function ocrRegionsForSource(width, height) {
   return [
-    { x: 0, y: height * 0.55, w: width, h: height * 0.42 },
-    { x: width * 0.05, y: height * 0.62, w: width * 0.9, h: height * 0.28 },
-    { x: 0, y: height * 0.35, w: width, h: height * 0.55 },
+    { x: width * 0.05, y: height * 0.38, w: width * 0.9, h: height * 0.32 },
+    { x: 0, y: height * 0.52, w: width, h: height * 0.38 },
+    { x: width * 0.05, y: height * 0.62, w: width * 0.9, h: height * 0.22 },
+    { x: 0, y: height * 0.3, w: width, h: height * 0.55 },
   ];
 }
 
