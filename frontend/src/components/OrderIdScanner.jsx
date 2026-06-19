@@ -4,11 +4,14 @@ import { Camera, X } from "lucide-react";
 import { useI18n } from "../context/I18nContext";
 import { decodeOrderIdFromFile } from "../utils/orderIdDecode";
 import { preloadOcrWorker } from "../utils/orderIdOcr";
-import { startLiveVideoScanner, cameraErrorMessage } from "../utils/liveScanner";
+import {
+  cameraErrorMessage,
+  openCameraStream,
+  startLiveScannerOnVideo,
+} from "../utils/liveScanner";
 
 export { extractOrderId, AKS_ORDER_ID_RE } from "../utils/orderIdScan";
 
-const SCANNER_REGION_ID = "paketo-barcode-scanner";
 const CAMERA_START_TIMEOUT_MS = 25000;
 
 export function OrderIdScanButton({ onOpen, disabled = false, className = "" }) {
@@ -34,6 +37,7 @@ export function OrderIdScanButton({ onOpen, disabled = false, className = "" }) 
 export function OrderIdScannerModal({ open, onClose, onScan }) {
   const { t } = useI18n();
   const fileRef = useRef(null);
+  const videoRef = useRef(null);
   const scannerRef = useRef(null);
   const handled = useRef(false);
   const startTokenRef = useRef(0);
@@ -49,7 +53,6 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     onScan(orderId);
   }, [onScan]);
 
-  /** Returns true only when scan is fully done (auto-filled). */
   const applyResolved = useCallback((result) => {
     if (!result) return false;
     if (result.exact) {
@@ -143,19 +146,31 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (token !== startTokenRef.current) return;
 
-      const scanner = await startLiveVideoScanner(SCANNER_REGION_ID, applyResolved, (status) => {
+      const video = videoRef.current;
+      if (!video) throw new Error("Video element missing");
+
+      const controller = startLiveScannerOnVideo(video, applyResolved, (status) => {
         if (token !== startTokenRef.current) return;
         if (status === "ocr") setScanStatus(t("batch.scanReadingDigits"));
         else if (status === "scanning") setScanStatus(t("batch.scanAutoDetecting"));
         else setScanStatus("");
       });
+
+      const stream = await openCameraStream();
       if (token !== startTokenRef.current) {
-        try { await scanner.stop(); } catch { /* ignore */ }
+        stream.getTracks().forEach((track) => track.stop());
         return;
       }
 
+      await controller.attachStream(stream);
+      if (token !== startTokenRef.current) {
+        await controller.stop();
+        return;
+      }
+
+      controller.startDecoders();
       window.clearTimeout(timeoutId);
-      scannerRef.current = scanner;
+      scannerRef.current = controller;
       setMode("live");
     } catch (err) {
       if (token !== startTokenRef.current) return;
@@ -185,6 +200,8 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
 
   if (!open) return null;
 
+  const showPreview = mode === "live" || mode === "starting";
+
   return createPortal(
     <div className="scanner-overlay" role="dialog" aria-modal="true">
       <div className="scanner-header">
@@ -200,7 +217,15 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       </div>
 
       <div className="scanner-viewport">
-        <div id={SCANNER_REGION_ID} className="scanner-region" />
+        {showPreview && (
+          <video
+            ref={videoRef}
+            className="scanner-native-video"
+            playsInline
+            muted
+            autoPlay
+          />
+        )}
 
         {mode === "live" && (
           <>
@@ -210,6 +235,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
                 <span className="scanner-corner scanner-corner-tr" />
                 <span className="scanner-corner scanner-corner-bl" />
                 <span className="scanner-corner scanner-corner-br" />
+                <span className="scanner-scan-line" />
               </div>
             </div>
             <div className="scanner-live-actions">

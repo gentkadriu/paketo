@@ -61,54 +61,49 @@ async function ocrCanvasWithPsm(canvas, psm) {
   return text;
 }
 
-async function ocrCanvasAllModes(canvas) {
-  const worker = await getWorker();
-  const modes = worker._psmModes || ["7", "6", "11"];
-  const results = [];
-  for (const psm of modes) {
-    try {
-      const text = await ocrCanvasWithPsm(canvas, psm);
-      results.push(resolveOrderId(text));
-    } catch {
-      // try next mode
-    }
-  }
-  return mergeResolveResults(...results);
-}
-
-export async function resolveOrderIdFromImageSource(source) {
+export async function resolveOrderIdFromImageSource(source, { quick = false } = {}) {
   const width = source.videoWidth || source.naturalWidth || source.width;
   const height = source.videoHeight || source.naturalHeight || source.height;
   if (!width || !height) return { exact: null, candidates: [] };
 
   const regions = scanRegionsForSize(width, height);
-  const ocrTargets = [
-    regions.digits,
-    regions.digitsWide,
-    regions.barcode,
-    regions.frame,
-    regions.lowerHalf,
-    regions.full,
-  ];
+  const ocrTargets = quick
+    ? [regions.digits, regions.digitsWide]
+    : [regions.digits, regions.digitsWide, regions.frame, regions.lowerHalf];
 
   const results = [];
+  const worker = await getWorker().catch(() => null);
+  if (!worker) return { exact: null, candidates: [] };
+
+  const modes = quick ? [worker._psmModes?.[0] || "7"] : (worker._psmModes || ["7", "6"]);
+
   for (const region of ocrTargets) {
     try {
       const crop = cropRegion(source, region);
-      results.push(await ocrCanvasAllModes(crop));
+      for (const psm of modes) {
+        try {
+          const text = await ocrCanvasWithPsm(crop, psm);
+          results.push(resolveOrderId(text));
+        } catch {
+          // try next
+        }
+      }
     } catch {
-      // worker not ready or timeout
+      // continue
     }
   }
 
-  for (const variant of buildScanVariants(source)) {
-    const vRegions = scanRegionsForSize(variant.width, variant.height);
-    for (const key of ["digits", "digitsWide", "frame"]) {
-      try {
-        const crop = cropRegion(variant, vRegions[key]);
-        results.push(await ocrCanvasAllModes(crop));
-      } catch {
-        // continue
+  if (!quick) {
+    for (const variant of buildScanVariants(source).slice(0, 2)) {
+      const vRegions = scanRegionsForSize(variant.width, variant.height);
+      for (const key of ["digits", "digitsWide"]) {
+        try {
+          const crop = cropRegion(variant, vRegions[key]);
+          const text = await ocrCanvasWithPsm(crop, modes[0]);
+          results.push(resolveOrderId(text));
+        } catch {
+          // continue
+        }
       }
     }
   }

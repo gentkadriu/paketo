@@ -4,14 +4,20 @@ import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { mergeResolveResults, resolveOrderId } from "./orderIdScan";
 import {
   buildScanVariants,
+  canvasFromSource,
   canvasFromVideo,
   cropRegion,
+  enhanceForScan,
   scanRegionsForSize,
+  upscaleCanvas,
 } from "./orderIdVision";
-import {
-  enhancedCanvasFromSource,
-  resolveOrderIdFromImageSource,
-} from "./orderIdOcr";
+import { resolveOrderIdFromImageSource } from "./orderIdOcr";
+
+function enhancedCanvasFromSource(source) {
+  const canvas = canvasFromSource(source);
+  if (!canvas) return null;
+  return enhanceForScan(upscaleCanvas(canvas));
+}
 
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
 const ZXING_HINTS = new Map([
@@ -54,7 +60,7 @@ function zxingDecodeCanvas(canvas) {
 
 async function html5DecodeCanvas(canvas) {
   const blob = await new Promise((resolve) => {
-    canvas.toBlob((b) => resolve(b), "image/jpeg", 0.92);
+    canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9);
   });
   if (!blob) return { exact: null, candidates: [] };
 
@@ -89,53 +95,75 @@ async function barcodePassOnCanvas(canvas) {
   return mergeResolveResults(...results);
 }
 
-async function barcodePassOnSource(source) {
+async function quickBarcodePass(source) {
   const results = [];
-  const variants = buildScanVariants(source);
+  const enhanced = enhancedCanvasFromSource(source);
+  if (enhanced) {
+    results.push(await barcodePassOnCanvas(enhanced));
+    const native = await detectBarcodeOnCanvas(enhanced);
+    if (native) results.push(resolveOrderId(native));
+  }
+  const canvas = canvasFromSource(source);
+  if (canvas) {
+    const native = await detectBarcodeOnCanvas(canvas);
+    if (native) results.push(resolveOrderId(native));
+    const zxing = zxingDecodeCanvas(canvas);
+    if (zxing) results.push(resolveOrderId(zxing));
+  }
+  return mergeResolveResults(...results);
+}
+
+async function fullDecodePass(source) {
+  const results = [];
   const width = source.videoWidth || source.naturalWidth || source.width;
   const height = source.videoHeight || source.naturalHeight || source.height;
-  const regions = width && height ? scanRegionsForSize(width, height) : null;
-
-  for (const variant of variants) {
-    results.push(await barcodePassOnCanvas(variant));
-    if (regions) {
-      for (const key of ["barcode", "frame", "full"]) {
-        const region = scanRegionsForSize(variant.width, variant.height)[key];
-        results.push(await barcodePassOnCanvas(cropRegion(variant, region)));
+  if (width && height) {
+    const regions = scanRegionsForSize(width, height);
+    for (const key of ["digits", "digitsWide", "barcode"]) {
+      try {
+        const crop = cropRegion(source, regions[key]);
+        const enhanced = enhancedCanvasFromSource(crop) || crop;
+        results.push(await barcodePassOnCanvas(enhanced));
+      } catch {
+        // continue
       }
     }
   }
 
-  const enhanced = enhancedCanvasFromSource(source);
-  if (enhanced) {
-    results.push(await barcodePassOnCanvas(enhanced));
+  for (const variant of buildScanVariants(source).slice(0, 3)) {
+    results.push(await barcodePassOnCanvas(variant));
   }
 
+  results.push(await resolveOrderIdFromImageSource(source, { quick: false }));
   return mergeResolveResults(...results);
 }
 
-export async function decodeOrderIdFromSource(source) {
-  const [barcodeResult, ocrResult] = await Promise.all([
-    barcodePassOnSource(source),
-    resolveOrderIdFromImageSource(source),
-  ]);
-  return mergeResolveResults(barcodeResult, ocrResult);
+export async function decodeOrderIdFromSource(source, { quick = false } = {}) {
+  const barcode = await quickBarcodePass(source);
+  if (barcode.exact) return barcode;
+
+  if (quick) {
+    const ocr = await resolveOrderIdFromImageSource(source, { quick: true });
+    return mergeResolveResults(barcode, ocr);
+  }
+
+  return mergeResolveResults(barcode, await fullDecodePass(source));
 }
 
 export async function decodeOrderIdFromFile(file) {
   const bitmap = await createImageBitmap(file);
   try {
-    return await decodeOrderIdFromSource(bitmap);
+    return await decodeOrderIdFromSource(bitmap, { quick: false });
   } finally {
     bitmap.close();
   }
 }
 
 export async function decodeOrderIdFromVideoFrame(video) {
-  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) {
     return { exact: null, candidates: [] };
   }
   const canvas = canvasFromVideo(video);
   if (!canvas) return { exact: null, candidates: [] };
-  return decodeOrderIdFromSource(canvas);
+  return decodeOrderIdFromSource(canvas, { quick: false });
 }

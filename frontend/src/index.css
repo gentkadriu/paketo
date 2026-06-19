@@ -214,19 +214,15 @@
   }
   .scanner-viewport {
     @apply relative flex-1 min-h-0 w-full overflow-hidden bg-black;
+    min-height: 50vh;
+  }
+  .scanner-native-video {
+    @apply absolute inset-0 z-[1] w-full h-full object-cover bg-black;
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
   }
   .scanner-region {
     @apply absolute inset-0 w-full h-full z-0;
-  }
-  .scanner-region > div {
-    width: 100% !important;
-    height: 100% !important;
-  }
-  .scanner-region video,
-  .scanner-native-video {
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: cover !important;
   }
   .scanner-frame-wrap {
     @apply pointer-events-none absolute inset-0 z-20 flex items-center justify-center;
@@ -280,7 +276,7 @@
     display: none;
   }
   .scanner-loading {
-    @apply absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 text-white text-sm;
+    @apply absolute inset-0 z-[25] flex flex-col items-center justify-center bg-black/50 text-white text-sm pointer-events-none;
   }
   .scanner-footer {
     @apply shrink-0 py-2 text-center text-[11px] text-white/40 font-mono;

@@ -13,7 +13,7 @@ function supportsNativeBarcode() {
   return typeof window !== "undefined" && "BarcodeDetector" in window;
 }
 
-async function openCameraStream() {
+export async function openCameraStream() {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Camera not supported in this browser.");
   }
@@ -34,15 +34,49 @@ async function openCameraStream() {
   throw lastError || new Error("Could not open camera.");
 }
 
+export function waitForVideoReady(video, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const ready = () => video.videoWidth > 0 && video.videoHeight > 0
+      && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+
+    if (ready()) {
+      resolve();
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Camera preview did not start."));
+    }, timeoutMs);
+
+    const onReady = () => {
+      if (!ready()) return;
+      cleanup();
+      resolve();
+    };
+
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      video.removeEventListener("loadedmetadata", onReady);
+      video.removeEventListener("loadeddata", onReady);
+      video.removeEventListener("playing", onReady);
+    };
+
+    video.addEventListener("loadedmetadata", onReady);
+    video.addEventListener("loadeddata", onReady);
+    video.addEventListener("playing", onReady);
+  });
+}
+
 let ocrBusy = false;
 
-async function decodeFrame(video, applyResolved) {
+async function decodeFrame(video, applyResolved, quick) {
   if (ocrBusy) return false;
   const canvas = canvasFromVideo(video);
   if (!canvas) return false;
   ocrBusy = true;
   try {
-    return applyResolved(await decodeOrderIdFromSource(canvas));
+    return applyResolved(await decodeOrderIdFromSource(canvas, { quick }));
   } catch {
     return false;
   } finally {
@@ -51,46 +85,28 @@ async function decodeFrame(video, applyResolved) {
 }
 
 /**
- * Native getUserMedia video + parallel decoders (BarcodeDetector, ZXing, OCR).
- * Html5Qrcode camera mode is avoided — it often fails on iOS without prompting.
+ * Attach decoders to a React-managed <video> element (must stay in the DOM).
  */
-export async function startLiveVideoScanner(containerId, applyResolved, onStatus) {
+export function startLiveScannerOnVideo(video, applyResolved, onStatus) {
   preloadOcrWorker();
   onStatus?.("camera");
 
-  const host = document.getElementById(containerId);
-  if (!host) throw new Error("Scanner element missing");
-  host.innerHTML = "";
-
-  const video = document.createElement("video");
-  video.playsInline = true;
-  video.setAttribute("playsinline", "true");
-  video.setAttribute("webkit-playsinline", "true");
-  video.muted = true;
-  video.autoplay = true;
-  video.className = "scanner-native-video";
-  host.appendChild(video);
-
-  const stream = await openCameraStream();
-  video.srcObject = stream;
-  try {
-    await video.play();
-  } catch {
-    await new Promise((resolve) => {
-      video.onloadedmetadata = () => resolve();
-    });
-    await video.play();
-  }
-
   let active = true;
+  let stream = null;
   const timers = [];
+  let rafId = null;
 
   const stop = async () => {
     active = false;
     timers.forEach((id) => clearInterval(id));
-    stream.getTracks().forEach((track) => track.stop());
-    video.srcObject = null;
-    host.innerHTML = "";
+    if (rafId) cancelAnimationFrame(rafId);
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+    }
+    if (video) {
+      video.srcObject = null;
+    }
   };
 
   const tryRaw = (raw) => {
@@ -98,69 +114,86 @@ export async function startLiveVideoScanner(containerId, applyResolved, onStatus
     return applyResolved(resolveOrderId(raw));
   };
 
-  onStatus?.("scanning");
-
-  if (supportsNativeBarcode()) {
-    // eslint-disable-next-line no-undef
-    const detector = new BarcodeDetector({ formats: ["code_128"] });
-    const loop = async () => {
-      if (!active) return;
-      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        try {
-          const canvas = canvasFromVideo(video);
-          const target = canvas || video;
-          const codes = await detector.detect(target);
-          for (const code of codes) {
-            if (tryRaw(code.rawValue || "")) {
-              await stop();
-              return;
-            }
-          }
-        } catch {
-          // next frame
-        }
-      }
-      if (active) requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
-  }
-
-  const zxingReader = new BrowserMultiFormatReader(ZXING_HINTS, 250);
-  timers.push(window.setInterval(async () => {
-    if (!active || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+  const attachStream = async (mediaStream) => {
+    stream = mediaStream;
+    video.srcObject = stream;
+    video.muted = true;
     try {
-      const canvas = canvasFromVideo(video);
-      if (!canvas) return;
-      const result = zxingReader.decodeFromCanvas(canvas);
-      if (result?.getText && tryRaw(result.getText())) {
-        await stop();
-      }
+      await video.play();
     } catch {
-      // no barcode in frame
+      // iOS may require a second attempt after metadata
     }
-  }, 350));
+    await waitForVideoReady(video);
+    onStatus?.("scanning");
+  };
 
-  timers.push(window.setInterval(async () => {
-    if (!active) return;
-    if (await decodeFrame(video, applyResolved)) await stop();
-  }, 1000));
+  const startDecoders = () => {
+    if (supportsNativeBarcode()) {
+      // eslint-disable-next-line no-undef
+      const detector = new BarcodeDetector({ formats: ["code_128"] });
+      const loop = async () => {
+        if (!active) return;
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+          try {
+            const canvas = canvasFromVideo(video);
+            const codes = canvas ? await detector.detect(canvas) : await detector.detect(video);
+            for (const code of codes) {
+              if (tryRaw(code.rawValue || "")) {
+                await stop();
+                return;
+              }
+            }
+          } catch {
+            // next frame
+          }
+        }
+        if (active) rafId = requestAnimationFrame(loop);
+      };
+      rafId = requestAnimationFrame(loop);
+    }
 
-  timers.push(window.setInterval(async () => {
-    if (!active) return;
-    onStatus?.("ocr");
-    if (await decodeFrame(video, applyResolved)) await stop();
-    else onStatus?.("scanning");
-  }, 2800));
+    const zxingReader = new BrowserMultiFormatReader(ZXING_HINTS, 250);
+    timers.push(window.setInterval(() => {
+      if (!active || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) return;
+      try {
+        const canvas = canvasFromVideo(video);
+        if (!canvas) return;
+        const result = zxingReader.decodeFromCanvas(canvas);
+        if (result?.getText && tryRaw(result.getText())) {
+          stop().catch(() => {});
+        }
+      } catch {
+        // no barcode in frame
+      }
+    }, 300));
+
+    timers.push(window.setInterval(async () => {
+      if (!active) return;
+      if (await decodeFrame(video, applyResolved, true)) await stop();
+    }, 700));
+
+    timers.push(window.setInterval(async () => {
+      if (!active) return;
+      onStatus?.("ocr");
+      if (await decodeFrame(video, applyResolved, false)) await stop();
+      else onStatus?.("scanning");
+    }, 2500));
+  };
 
   const captureNow = async () => {
     if (!active) return false;
     onStatus?.("ocr");
-    const ok = await decodeFrame(video, applyResolved);
+    const ok = await decodeFrame(video, applyResolved, false);
     if (!ok) onStatus?.("scanning");
     return ok;
   };
 
-  return { video, stop, captureNow };
+  return {
+    attachStream,
+    startDecoders,
+    stop,
+    captureNow,
+  };
 }
 
 export function cameraErrorMessage(err) {
