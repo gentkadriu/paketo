@@ -3,14 +3,16 @@ import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { useI18n } from "../context/I18nContext";
+import { decodeOrderIdFromFile, decodeOrderIdFromVideoFrame } from "../utils/orderIdDecode";
+import { resolveOrderId } from "../utils/orderIdScan";
 
-/** AKS receipt barcodes encode a 14-digit ID: 917 + 11 digits. */
-const AKS_ORDER_ID_RE = /^917\d{11}$/;
+export { extractOrderId, AKS_ORDER_ID_RE } from "../utils/orderIdScan";
+
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
 const SCANNER_REGION_ID = "paketo-barcode-scanner";
-const CAMERA_START_TIMEOUT_MS = 15000;
+const CAMERA_START_TIMEOUT_MS = 20000;
+const OCR_INTERVAL_MS = 1800;
 
-/** Full-frame scan works much better for horizontal Code 128 labels. */
 const HTML5_SCAN_CONFIG = {
   fps: 20,
   disableFlip: true,
@@ -29,7 +31,7 @@ async function warmUpCameraAccess() {
       await new Promise((resolve) => setTimeout(resolve, 200));
       return;
     } catch {
-      // try next constraint set
+      // try next
     }
   }
   throw new Error("Camera permission denied");
@@ -51,7 +53,6 @@ function supportsNativeBarcode() {
   return typeof window !== "undefined" && "BarcodeDetector" in window;
 }
 
-/** Chrome / Edge / Android — native Code 128 detection on video frames. */
 async function startNativeBarcodeScanner(regionId, onRawCode) {
   const host = document.getElementById(regionId);
   if (!host) throw new Error("Scanner element missing");
@@ -100,6 +101,7 @@ async function startNativeBarcodeScanner(regionId, onRawCode) {
 
   return {
     kind: "native",
+    video,
     stop: async () => {
       active = false;
       stream.getTracks().forEach((track) => track.stop());
@@ -128,6 +130,7 @@ async function startHtml5Scanner(onRawCode) {
       await scanner.start(camera.id, HTML5_SCAN_CONFIG, onRawCode, () => {});
       return {
         kind: "html5",
+        video: null,
         stop: async () => {
           try { await scanner.stop(); } catch { /* ignore */ }
           try { await scanner.clear(); } catch { /* ignore */ }
@@ -147,50 +150,12 @@ async function startLiveScanner(onRawCode) {
     try {
       return await startNativeBarcodeScanner(SCANNER_REGION_ID, onRawCode);
     } catch {
-      // fall through to html5-qrcode
+      // fall through
     }
   }
   return startHtml5Scanner(onRawCode);
 }
 
-export function extractOrderId(raw) {
-  const digits = String(raw || "").replace(/\D/g, "");
-  if (AKS_ORDER_ID_RE.test(digits)) return digits;
-  const embedded = digits.match(/917\d{11}/);
-  return embedded ? embedded[0] : "";
-}
-
-async function decodeBarcodeFile(file) {
-  if (supportsNativeBarcode()) {
-    try {
-      const bitmap = await createImageBitmap(file);
-      // eslint-disable-next-line no-undef
-      const detector = new BarcodeDetector({ formats: ["code_128"] });
-      const codes = await detector.detect(bitmap);
-      bitmap.close();
-      if (codes.length) return codes[0].rawValue || "";
-    } catch {
-      // fall through
-    }
-  }
-
-  const tempId = "barcode-file-decode";
-  let host = document.getElementById(tempId);
-  if (!host) {
-    host = document.createElement("div");
-    host.id = tempId;
-    host.style.display = "none";
-    document.body.appendChild(host);
-  }
-  const scanner = new Html5Qrcode(tempId, { formatsToSupport: SCAN_FORMATS, verbose: false });
-  try {
-    return await scanner.scanFile(file, false);
-  } finally {
-    try { scanner.clear(); } catch { /* ignore */ }
-  }
-}
-
-/** Camera icon — opens batch-level scanner modal via parent. */
 export function OrderIdScanButton({ onOpen, disabled = false, className = "" }) {
   const { t } = useI18n();
   return (
@@ -215,41 +180,85 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
   const { t } = useI18n();
   const fileRef = useRef(null);
   const scannerRef = useRef(null);
+  const ocrTimerRef = useRef(null);
   const handled = useRef(false);
   const startTokenRef = useRef(0);
   const [error, setError] = useState("");
-  const [mode, setMode] = useState("starting"); // starting | live | fallback
+  const [mode, setMode] = useState("starting");
   const [fallbackHint, setFallbackHint] = useState("");
+  const [candidates, setCandidates] = useState([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const ocrBusyRef = useRef(false);
 
   const finishScan = useCallback((orderId) => {
     if (navigator.vibrate) navigator.vibrate(40);
     onScan(orderId);
   }, [onScan]);
 
-  const tryDecode = useCallback((raw) => {
-    const orderId = extractOrderId(raw);
-    if (!AKS_ORDER_ID_RE.test(orderId)) return false;
-    finishScan(orderId);
-    return true;
+  const applyResolved = useCallback((result) => {
+    if (!result) return false;
+    if (result.exact) {
+      handled.current = true;
+      setCandidates([]);
+      finishScan(result.exact);
+      scannerRef.current?.stop().catch(() => {});
+      return true;
+    }
+    if (result.candidates?.length === 1) {
+      handled.current = true;
+      setCandidates([]);
+      finishScan(result.candidates[0]);
+      scannerRef.current?.stop().catch(() => {});
+      return true;
+    }
+    if (result.candidates?.length > 1) {
+      setCandidates(result.candidates);
+      setError("");
+      return true;
+    }
+    return false;
   }, [finishScan]);
 
   const stopScanner = useCallback(async () => {
+    if (ocrTimerRef.current) {
+      clearInterval(ocrTimerRef.current);
+      ocrTimerRef.current = null;
+    }
     const scanner = scannerRef.current;
     scannerRef.current = null;
     if (!scanner) return;
     try { await scanner.stop(); } catch { /* ignore */ }
   }, []);
 
+  const runOcrOnVideo = useCallback(async (video) => {
+    if (!video || handled.current || ocrBusyRef.current) return;
+    ocrBusyRef.current = true;
+    setOcrBusy(true);
+    try {
+      const result = await decodeOrderIdFromVideoFrame(video);
+      applyResolved(result);
+    } finally {
+      ocrBusyRef.current = false;
+      setOcrBusy(false);
+    }
+  }, [applyResolved]);
+
   const handlePhoto = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
     setError("");
+    setCandidates([]);
+    setOcrBusy(true);
     try {
-      const text = await decodeBarcodeFile(file);
-      if (!tryDecode(text)) setError(t("batch.scanNoBarcode"));
+      const result = await decodeOrderIdFromFile(file);
+      if (!applyResolved(result)) {
+        setError(t("batch.scanNoBarcode"));
+      }
     } catch {
       setError(t("batch.scanNoBarcode"));
+    } finally {
+      setOcrBusy(false);
     }
   };
 
@@ -257,6 +266,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     const token = ++startTokenRef.current;
     setError("");
     setFallbackHint("");
+    setCandidates([]);
     setMode("starting");
 
     if (!window.isSecureContext) {
@@ -279,10 +289,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
 
       const onRawCode = (raw) => {
         if (handled.current) return false;
-        if (!tryDecode(raw)) return false;
-        handled.current = true;
-        scannerRef.current?.stop().catch(() => {});
-        return true;
+        return applyResolved(resolveOrderId(raw));
       };
 
       const scanner = await startLiveScanner(onRawCode);
@@ -294,6 +301,12 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       window.clearTimeout(timeoutId);
       scannerRef.current = scanner;
       setMode("live");
+
+      if (scanner.video) {
+        ocrTimerRef.current = window.setInterval(() => {
+          runOcrOnVideo(scanner.video);
+        }, OCR_INTERVAL_MS);
+      }
     } catch {
       if (token !== startTokenRef.current) return;
       window.clearTimeout(timeoutId);
@@ -301,7 +314,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       setFallbackHint(t("batch.scanCameraError"));
       setMode("fallback");
     }
-  }, [stopScanner, t, tryDecode]);
+  }, [applyResolved, runOcrOnVideo, stopScanner, t]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -382,6 +395,32 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
           </div>
         )}
       </div>
+
+      {ocrBusy && mode === "live" && (
+        <p className="scanner-ocr-status">{t("batch.scanReadingDigits")}</p>
+      )}
+
+      {candidates.length > 0 && (
+        <div className="scanner-candidates">
+          <p className="text-xs text-white/70 mb-2">{t("batch.scanPickId")}</p>
+          <div className="flex flex-col gap-1.5">
+            {candidates.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => {
+                  handled.current = true;
+                  finishScan(id);
+                  stopScanner();
+                }}
+                className="scanner-candidate-btn"
+              >
+                {id}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <p className="scanner-footer font-mono">917XXXXXXXXXXX</p>
 
