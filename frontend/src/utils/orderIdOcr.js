@@ -6,7 +6,11 @@ async function getWorker() {
   if (!workerPromise) {
     workerPromise = (async () => {
       const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("eng", 1, { logger: () => {} });
+      const worker = await createWorker("eng", 1, {
+        logger: () => {},
+        workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
+        corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js",
+      });
       await worker.setParameters({
         tessedit_char_whitelist: "0123456789",
         tessedit_pageseg_mode: "7",
@@ -15,6 +19,17 @@ async function getWorker() {
     })();
   }
   return workerPromise;
+}
+
+async function ocrCanvas(canvas) {
+  const worker = await getWorker();
+  const enhanced = enhanceForOcr(canvas);
+  const recognize = worker.recognize(enhanced);
+  const timeout = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("ocr timeout")), 12000);
+  });
+  const { data: { text } } = await Promise.race([recognize, timeout]);
+  return text;
 }
 
 function cropCanvas(source, sx, sy, sw, sh) {
@@ -40,13 +55,6 @@ function enhanceForOcr(canvas) {
   }
   ctx.putImageData(image, 0, 0);
   return canvas;
-}
-
-async function ocrCanvas(canvas) {
-  const worker = await getWorker();
-  const enhanced = enhanceForOcr(canvas);
-  const { data: { text } } = await worker.recognize(enhanced);
-  return text;
 }
 
 function ocrRegionsForSource(width, height) {

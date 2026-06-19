@@ -1,8 +1,20 @@
+import { BrowserMultiFormatReader } from "@zxing/browser";
+import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { mergeResolveResults, resolveOrderId } from "./orderIdScan";
-import { enhancedCanvasFromSource, resolveOrderIdFromFile, resolveOrderIdFromImageSource } from "./orderIdOcr";
+import { enhancedCanvasFromSource, resolveOrderIdFromImageSource } from "./orderIdOcr";
 
 const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
+const ZXING_HINTS = new Map([
+  [DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.CODE_128]],
+  [DecodeHintType.TRY_HARDER, true],
+]);
+
+let zxingReader = null;
+function getZxingReader() {
+  if (!zxingReader) zxingReader = new BrowserMultiFormatReader(ZXING_HINTS, 500);
+  return zxingReader;
+}
 
 function supportsNativeBarcode() {
   return typeof window !== "undefined" && "BarcodeDetector" in window;
@@ -21,10 +33,15 @@ async function detectBarcodeOnSource(source) {
   return null;
 }
 
-async function detectBarcodeOnCanvas(canvas) {
-  const raw = await detectBarcodeOnSource(canvas);
-  if (raw) return resolveOrderId(raw);
-  return { exact: null, candidates: [] };
+async function zxingDecodeSource(source) {
+  try {
+    const canvas = enhancedCanvasFromSource(source);
+    const reader = getZxingReader();
+    const result = await reader.decodeFromCanvas(canvas);
+    return result?.getText() || "";
+  } catch {
+    return "";
+  }
 }
 
 async function html5DecodeBlob(blob) {
@@ -53,7 +70,6 @@ function canvasToBlob(canvas) {
   });
 }
 
-/** Full decode pipeline: native barcode → enhanced barcode → html5 → OCR + repair. */
 export async function decodeOrderIdFromFile(file) {
   const bitmap = await createImageBitmap(file);
   const results = [];
@@ -61,8 +77,12 @@ export async function decodeOrderIdFromFile(file) {
     const native = await detectBarcodeOnSource(bitmap);
     if (native) results.push(resolveOrderId(native));
 
+    const zxing = await zxingDecodeSource(bitmap);
+    if (zxing) results.push(resolveOrderId(zxing));
+
     const enhanced = enhancedCanvasFromSource(bitmap);
-    results.push(await detectBarcodeOnCanvas(enhanced));
+    const enhancedNative = await detectBarcodeOnSource(enhanced);
+    if (enhancedNative) results.push(resolveOrderId(enhancedNative));
 
     const blob = await canvasToBlob(enhanced);
     if (blob) results.push(await html5DecodeBlob(blob));
@@ -79,11 +99,9 @@ export async function decodeOrderIdFromVideoFrame(video) {
   const native = await detectBarcodeOnSource(video);
   if (native) results.push(resolveOrderId(native));
 
-  const enhanced = enhancedCanvasFromSource(video);
-  results.push(await detectBarcodeOnCanvas(enhanced));
-  results.push(await resolveOrderIdFromImageSource(video));
+  const zxing = await zxingDecodeSource(video);
+  if (zxing) results.push(resolveOrderId(zxing));
 
+  results.push(await resolveOrderIdFromImageSource(video));
   return mergeResolveResults(...results);
 }
-
-export { resolveOrderIdFromFile };

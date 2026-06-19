@@ -1,160 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { useI18n } from "../context/I18nContext";
-import { decodeOrderIdFromFile, decodeOrderIdFromVideoFrame } from "../utils/orderIdDecode";
-import { resolveOrderId } from "../utils/orderIdScan";
+import { decodeOrderIdFromFile } from "../utils/orderIdDecode";
+import { startLiveVideoScanner } from "../utils/liveScanner";
 
 export { extractOrderId, AKS_ORDER_ID_RE } from "../utils/orderIdScan";
 
-const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
 const SCANNER_REGION_ID = "paketo-barcode-scanner";
-const CAMERA_START_TIMEOUT_MS = 20000;
-const OCR_INTERVAL_MS = 1800;
-
-const HTML5_SCAN_CONFIG = {
-  fps: 20,
-  disableFlip: true,
-};
-
-async function warmUpCameraAccess() {
-  const tries = [
-    { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-    { video: { facingMode: "user" } },
-    { video: true },
-  ];
-  for (const constraints of tries) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      stream.getTracks().forEach((track) => track.stop());
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      return;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error("Camera permission denied");
-}
-
-function sortCameras(cameras) {
-  return [...cameras].sort((a, b) => {
-    const score = (label) => {
-      const text = (label || "").toLowerCase();
-      if (/back|rear|environment/.test(text)) return 0;
-      if (/front|user|facetime|integrated/.test(text)) return 1;
-      return 2;
-    };
-    return score(a.label) - score(b.label);
-  });
-}
-
-function supportsNativeBarcode() {
-  return typeof window !== "undefined" && "BarcodeDetector" in window;
-}
-
-async function startNativeBarcodeScanner(regionId, onRawCode) {
-  const host = document.getElementById(regionId);
-  if (!host) throw new Error("Scanner element missing");
-
-  host.innerHTML = "";
-  const video = document.createElement("video");
-  video.playsInline = true;
-  video.muted = true;
-  video.autoplay = true;
-  video.className = "scanner-native-video";
-  host.appendChild(video);
-
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: { ideal: "environment" },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    },
-  });
-  video.srcObject = stream;
-  await video.play();
-
-  // eslint-disable-next-line no-undef
-  const detector = new BarcodeDetector({ formats: ["code_128"] });
-  let active = true;
-
-  const tick = async () => {
-    if (!active) return;
-    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-      try {
-        const codes = await detector.detect(video);
-        for (const code of codes) {
-          if (onRawCode(code.rawValue || "")) {
-            active = false;
-            stream.getTracks().forEach((track) => track.stop());
-            return;
-          }
-        }
-      } catch {
-        // skip frame
-      }
-    }
-    if (active) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-
-  return {
-    kind: "native",
-    video,
-    stop: async () => {
-      active = false;
-      stream.getTracks().forEach((track) => track.stop());
-      video.srcObject = null;
-    },
-  };
-}
-
-async function startHtml5Scanner(onRawCode) {
-  await warmUpCameraAccess();
-
-  const host = document.getElementById(SCANNER_REGION_ID);
-  if (!host) throw new Error("Scanner element missing");
-  host.innerHTML = "";
-
-  const cameras = await Html5Qrcode.getCameras();
-  if (!cameras.length) throw new Error("No cameras found");
-
-  let lastError = null;
-  for (const camera of sortCameras(cameras)) {
-    const scanner = new Html5Qrcode(SCANNER_REGION_ID, {
-      formatsToSupport: SCAN_FORMATS,
-      verbose: false,
-    });
-    try {
-      await scanner.start(camera.id, HTML5_SCAN_CONFIG, onRawCode, () => {});
-      return {
-        kind: "html5",
-        video: null,
-        stop: async () => {
-          try { await scanner.stop(); } catch { /* ignore */ }
-          try { await scanner.clear(); } catch { /* ignore */ }
-        },
-      };
-    } catch (err) {
-      lastError = err;
-      try { await scanner.clear(); } catch { /* ignore */ }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-  throw lastError ?? new Error("Camera unavailable");
-}
-
-async function startLiveScanner(onRawCode) {
-  if (supportsNativeBarcode()) {
-    try {
-      return await startNativeBarcodeScanner(SCANNER_REGION_ID, onRawCode);
-    } catch {
-      // fall through
-    }
-  }
-  return startHtml5Scanner(onRawCode);
-}
+const CAMERA_START_TIMEOUT_MS = 25000;
 
 export function OrderIdScanButton({ onOpen, disabled = false, className = "" }) {
   const { t } = useI18n();
@@ -180,7 +34,6 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
   const { t } = useI18n();
   const fileRef = useRef(null);
   const scannerRef = useRef(null);
-  const ocrTimerRef = useRef(null);
   const handled = useRef(false);
   const startTokenRef = useRef(0);
   const [error, setError] = useState("");
@@ -188,13 +41,13 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
   const [fallbackHint, setFallbackHint] = useState("");
   const [candidates, setCandidates] = useState([]);
   const [ocrBusy, setOcrBusy] = useState(false);
-  const ocrBusyRef = useRef(false);
 
   const finishScan = useCallback((orderId) => {
     if (navigator.vibrate) navigator.vibrate(40);
     onScan(orderId);
   }, [onScan]);
 
+  /** Returns true only when scan is fully done (auto-filled). */
   const applyResolved = useCallback((result) => {
     if (!result) return false;
     if (result.exact) {
@@ -214,34 +67,32 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     if (result.candidates?.length > 1) {
       setCandidates(result.candidates);
       setError("");
-      return true;
+      return false;
     }
     return false;
   }, [finishScan]);
 
   const stopScanner = useCallback(async () => {
-    if (ocrTimerRef.current) {
-      clearInterval(ocrTimerRef.current);
-      ocrTimerRef.current = null;
-    }
     const scanner = scannerRef.current;
     scannerRef.current = null;
     if (!scanner) return;
     try { await scanner.stop(); } catch { /* ignore */ }
   }, []);
 
-  const runOcrOnVideo = useCallback(async (video) => {
-    if (!video || handled.current || ocrBusyRef.current) return;
-    ocrBusyRef.current = true;
+  const captureNow = useCallback(async () => {
+    const scanner = scannerRef.current;
+    if (!scanner?.captureNow || handled.current) return;
     setOcrBusy(true);
+    setError("");
     try {
-      const result = await decodeOrderIdFromVideoFrame(video);
-      applyResolved(result);
+      const ok = await scanner.captureNow();
+      if (!ok && candidates.length === 0) {
+        setError(t("batch.scanNoBarcode"));
+      }
     } finally {
-      ocrBusyRef.current = false;
       setOcrBusy(false);
     }
-  }, [applyResolved]);
+  }, [candidates.length, t]);
 
   const handlePhoto = async (e) => {
     const file = e.target.files?.[0];
@@ -252,7 +103,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     setOcrBusy(true);
     try {
       const result = await decodeOrderIdFromFile(file);
-      if (!applyResolved(result)) {
+      if (!applyResolved(result) && !(result.candidates?.length > 1)) {
         setError(t("batch.scanNoBarcode"));
       }
     } catch {
@@ -287,12 +138,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (token !== startTokenRef.current) return;
 
-      const onRawCode = (raw) => {
-        if (handled.current) return false;
-        return applyResolved(resolveOrderId(raw));
-      };
-
-      const scanner = await startLiveScanner(onRawCode);
+      const scanner = await startLiveVideoScanner(SCANNER_REGION_ID, applyResolved);
       if (token !== startTokenRef.current) {
         try { await scanner.stop(); } catch { /* ignore */ }
         return;
@@ -301,12 +147,6 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       window.clearTimeout(timeoutId);
       scannerRef.current = scanner;
       setMode("live");
-
-      if (scanner.video) {
-        ocrTimerRef.current = window.setInterval(() => {
-          runOcrOnVideo(scanner.video);
-        }, OCR_INTERVAL_MS);
-      }
     } catch {
       if (token !== startTokenRef.current) return;
       window.clearTimeout(timeoutId);
@@ -314,7 +154,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       setFallbackHint(t("batch.scanCameraError"));
       setMode("fallback");
     }
-  }, [applyResolved, runOcrOnVideo, stopScanner, t]);
+  }, [applyResolved, stopScanner, t]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -330,7 +170,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
 
   if (!open) return null;
 
-  const modal = (
+  return createPortal(
     <div className="scanner-overlay" role="dialog" aria-modal="true">
       <div className="scanner-header">
         <div className="min-w-0 pr-2">
@@ -348,14 +188,24 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
         <div id={SCANNER_REGION_ID} className="scanner-region" />
 
         {mode === "live" && (
-          <div className="scanner-frame-wrap" aria-hidden="true">
-            <div className="scanner-frame-box scanner-frame-box--barcode">
-              <span className="scanner-corner scanner-corner-tl" />
-              <span className="scanner-corner scanner-corner-tr" />
-              <span className="scanner-corner scanner-corner-bl" />
-              <span className="scanner-corner scanner-corner-br" />
+          <>
+            <div className="scanner-frame-wrap" aria-hidden="true">
+              <div className="scanner-frame-box scanner-frame-box--barcode">
+                <span className="scanner-corner scanner-corner-tl" />
+                <span className="scanner-corner scanner-corner-tr" />
+                <span className="scanner-corner scanner-corner-bl" />
+                <span className="scanner-corner scanner-corner-br" />
+              </div>
             </div>
-          </div>
+            <div className="scanner-live-actions">
+              <button type="button" onClick={captureNow} disabled={ocrBusy} className="scanner-photo-btn !text-sm">
+                {ocrBusy ? t("batch.scanReadingDigits") : t("batch.scanCaptureNow")}
+              </button>
+              <button type="button" onClick={() => fileRef.current?.click()} className="scanner-photo-btn !bg-white/10 !bg-none border border-white/20 !text-sm">
+                {t("batch.scanSnapPhoto")}
+              </button>
+            </div>
+          </>
         )}
 
         {mode === "starting" && (
@@ -368,37 +218,17 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
         {mode === "fallback" && (
           <div className="scanner-fallback-panel">
             <p className="text-white/90 text-sm text-center px-6 leading-relaxed">{fallbackHint}</p>
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-              <button
-                type="button"
-                onClick={startCamera}
-                className="scanner-photo-btn !w-auto !px-6 !bg-white/10 !bg-none border border-white/20"
-              >
+            <div className="mt-4 flex flex-col gap-2">
+              <button type="button" onClick={startCamera} className="scanner-photo-btn !w-auto !px-6 !bg-white/10 !bg-none border border-white/20">
                 {t("batch.scanRetryCamera")}
               </button>
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                className="scanner-photo-btn !w-auto !px-6"
-              >
+              <button type="button" onClick={() => fileRef.current?.click()} className="scanner-photo-btn !w-auto !px-6">
                 {t("batch.scanSnapPhoto")}
               </button>
             </div>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={handlePhoto}
-            />
           </div>
         )}
       </div>
-
-      {ocrBusy && mode === "live" && (
-        <p className="scanner-ocr-status">{t("batch.scanReadingDigits")}</p>
-      )}
 
       {candidates.length > 0 && (
         <div className="scanner-candidates">
@@ -423,10 +253,17 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       )}
 
       <p className="scanner-footer font-mono">917XXXXXXXXXXX</p>
-
       {error && <p className="scanner-error">{error}</p>}
-    </div>
-  );
 
-  return createPortal(modal, document.body);
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={handlePhoto}
+      />
+    </div>,
+    document.body,
+  );
 }
