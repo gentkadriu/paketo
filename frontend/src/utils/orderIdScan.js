@@ -70,11 +70,11 @@ function candidatesWithOneWrongDigit(digits) {
  */
 export function resolveOrderId(raw) {
   const exact = extractOrderId(raw);
-  if (exact) return { exact, candidates: [] };
+  if (exact) return { exact: null, candidates: [exact] };
 
   const splitCandidates = repairSplitDigitGroups(raw);
-  if (splitCandidates.length === 1) {
-    return { exact: splitCandidates[0], candidates: [] };
+  if (splitCandidates.length > 0) {
+    return { exact: null, candidates: splitCandidates.slice(0, 10) };
   }
 
   let digits = String(raw || "").replace(/\D/g, "");
@@ -83,7 +83,7 @@ export function resolveOrderId(raw) {
 
   if (digits.length > 14 && digits.startsWith("917")) {
     const trimmed = digits.slice(0, 14);
-    if (AKS_ORDER_ID_RE.test(trimmed)) return { exact: trimmed, candidates: [] };
+    if (AKS_ORDER_ID_RE.test(trimmed)) return { exact: null, candidates: [trimmed] };
   }
 
   const candidates = new Set([
@@ -93,17 +93,18 @@ export function resolveOrderId(raw) {
   ]);
 
   const list = [...candidates];
-  if (list.length === 1) return { exact: list[0], candidates: [] };
+  if (list.length === 0) return { exact: null, candidates: [] };
   return { exact: null, candidates: list.slice(0, 10) };
 }
 
 export function mergeResolveResults(...results) {
-  for (const result of results) {
-    if (result?.exact) return result;
-  }
   const seen = new Set();
   const candidates = [];
   for (const result of results) {
+    if (result?.exact && !seen.has(result.exact)) {
+      seen.add(result.exact);
+      candidates.push(result.exact);
+    }
     for (const id of result?.candidates || []) {
       if (!seen.has(id)) {
         seen.add(id);
@@ -111,6 +112,5 @@ export function mergeResolveResults(...results) {
       }
     }
   }
-  if (candidates.length === 1) return { exact: candidates[0], candidates: [] };
-  return { exact: null, candidates: candidates.slice(0, 10) };
+  return { exact: null, candidates: candidates.slice(0, 12) };
 }

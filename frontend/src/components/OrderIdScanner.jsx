@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
 import { useI18n } from "../context/I18nContext";
-import { decodeOrderIdFromFile } from "../utils/orderIdDecode";
+import { decodeOrderIdFromFile, decodeOrderIdFromVideoFrame } from "../utils/orderIdDecode";
 import { preloadOcrWorker } from "../utils/orderIdOcr";
 import {
   cameraErrorMessage,
@@ -40,6 +40,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
   const videoRef = useRef(null);
   const scannerRef = useRef(null);
   const handled = useRef(false);
+  const pickShown = useRef(false);
   const startTokenRef = useRef(0);
   const [error, setError] = useState("");
   const [mode, setMode] = useState("starting");
@@ -53,29 +54,30 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     onScan(orderId);
   }, [onScan]);
 
+  const collectIds = useCallback((result) => {
+    if (!result) return [];
+    const ids = [];
+    const add = (id) => {
+      if (id && !ids.includes(id)) ids.push(id);
+    };
+    add(result.exact);
+    for (const id of result.candidates || []) add(id);
+    return ids;
+  }, []);
+
+  /** Show picker — never auto-save. Returns false so the camera keeps running. */
   const applyResolved = useCallback((result) => {
-    if (!result) return false;
-    if (result.exact) {
-      handled.current = true;
-      setCandidates([]);
-      finishScan(result.exact);
-      scannerRef.current?.stop().catch(() => {});
-      return true;
-    }
-    if (result.candidates?.length === 1) {
-      handled.current = true;
-      setCandidates([]);
-      finishScan(result.candidates[0]);
-      scannerRef.current?.stop().catch(() => {});
-      return true;
-    }
-    if (result.candidates?.length > 1) {
-      setCandidates(result.candidates);
-      setError("");
-      return false;
-    }
+    if (!result || pickShown.current || handled.current) return false;
+    const ids = collectIds(result);
+    if (ids.length === 0) return false;
+
+    pickShown.current = true;
+    setCandidates(ids);
+    setError("");
+    setScanStatus(t("batch.scanConfirmPick"));
+    if (navigator.vibrate) navigator.vibrate(30);
     return false;
-  }, [finishScan]);
+  }, [collectIds, t]);
 
   const stopScanner = useCallback(async () => {
     const scanner = scannerRef.current;
@@ -84,20 +86,43 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     try { await scanner.stop(); } catch { /* ignore */ }
   }, []);
 
+  const confirmPick = useCallback((orderId) => {
+    handled.current = true;
+    pickShown.current = false;
+    setCandidates([]);
+    finishScan(orderId);
+    stopScanner();
+  }, [finishScan, stopScanner]);
+
+  const resumeScanning = useCallback(() => {
+    pickShown.current = false;
+    setCandidates([]);
+    setError("");
+    setScanStatus(t("batch.scanAutoDetecting"));
+  }, [t]);
+
   const captureNow = useCallback(async () => {
     const scanner = scannerRef.current;
-    if (!scanner?.captureNow || handled.current) return;
+    if (!scanner?.captureNow || handled.current || pickShown.current) return;
     setOcrBusy(true);
     setError("");
     try {
-      const ok = await scanner.captureNow();
-      if (!ok && candidates.length === 0) {
+      const video = videoRef.current;
+      if (!video) return;
+      const result = await decodeOrderIdFromVideoFrame(video);
+      const ids = collectIds(result);
+      if (ids.length === 0) {
         setError(t("batch.scanNoBarcode"));
+      } else {
+        pickShown.current = true;
+        setCandidates(ids);
+        setScanStatus(t("batch.scanConfirmPick"));
+        if (navigator.vibrate) navigator.vibrate(30);
       }
     } finally {
       setOcrBusy(false);
     }
-  }, [candidates.length, t]);
+  }, [collectIds, t]);
 
   const handlePhoto = async (e) => {
     const file = e.target.files?.[0];
@@ -108,8 +133,14 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     setOcrBusy(true);
     try {
       const result = await decodeOrderIdFromFile(file);
-      if (!applyResolved(result) && !(result.candidates?.length > 1)) {
+      const ids = collectIds(result);
+      if (ids.length === 0) {
         setError(t("batch.scanNoBarcode"));
+      } else {
+        pickShown.current = true;
+        setCandidates(ids);
+        setScanStatus(t("batch.scanConfirmPick"));
+        if (navigator.vibrate) navigator.vibrate(30);
       }
     } catch {
       setError(t("batch.scanNoBarcode"));
@@ -124,6 +155,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     setFallbackHint("");
     setCandidates([]);
     setScanStatus("");
+    pickShown.current = false;
     setMode("starting");
 
     if (!window.isSecureContext) {
@@ -189,6 +221,7 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     if (!open) return undefined;
     document.body.style.overflow = "hidden";
     handled.current = false;
+    pickShown.current = false;
     preloadOcrWorker();
     startCamera();
     return () => {
@@ -272,23 +305,29 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       </div>
 
       {candidates.length > 0 && (
-        <div className="scanner-candidates">
-          <p className="text-xs text-white/70 mb-2">{t("batch.scanPickId")}</p>
-          <div className="flex flex-col gap-1.5">
-            {candidates.map((id) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => {
-                  handled.current = true;
-                  finishScan(id);
-                  stopScanner();
-                }}
-                className="scanner-candidate-btn"
-              >
-                {id}
-              </button>
-            ))}
+        <div className="scanner-pick-sheet" role="dialog" aria-label={t("batch.scanConfirmPick")}>
+          <div className="scanner-pick-sheet-inner">
+            <p className="text-sm font-semibold text-white mb-1">{t("batch.scanConfirmPick")}</p>
+            <p className="text-xs text-white/65 mb-3">{t("batch.scanConfirmHint")}</p>
+            <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+              {candidates.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => confirmPick(id)}
+                  className="scanner-candidate-btn"
+                >
+                  {id}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={resumeScanning}
+              className="mt-3 w-full rounded-lg border border-white/20 px-3 py-2.5 text-sm text-white/80 hover:bg-white/10"
+            >
+              {t("batch.scanRescan")}
+            </button>
           </div>
         </div>
       )}

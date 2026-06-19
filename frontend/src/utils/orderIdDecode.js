@@ -140,13 +140,9 @@ async function fullDecodePass(source) {
 
 export async function decodeOrderIdFromSource(source, { quick = false } = {}) {
   const barcode = await quickBarcodePass(source);
-  if (barcode.exact) return barcode;
-
   if (quick) {
-    const ocr = await resolveOrderIdFromImageSource(source, { quick: true });
-    return mergeResolveResults(barcode, ocr);
+    return mergeResolveResults(barcode, await resolveOrderIdFromImageSource(source, { quick: true }));
   }
-
   return mergeResolveResults(barcode, await fullDecodePass(source));
 }
 
