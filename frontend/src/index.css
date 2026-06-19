@@ -222,7 +222,8 @@
     width: 100% !important;
     height: 100% !important;
   }
-  .scanner-region video {
+  .scanner-region video,
+  .scanner-native-video {
     width: 100% !important;
     height: 100% !important;
     object-fit: cover !important;
@@ -233,8 +234,11 @@
   }
   .scanner-frame-box {
     @apply relative;
-    width: min(88vw, 360px);
+    width: min(92vw, 380px);
     height: 100px;
+  }
+  .scanner-frame-box--barcode {
+    height: 130px;
   }
   .scanner-corner {
     @apply absolute block;

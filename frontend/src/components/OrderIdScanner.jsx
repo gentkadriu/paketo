@@ -10,15 +10,15 @@ const SCAN_FORMATS = [Html5QrcodeSupportedFormats.CODE_128];
 const SCANNER_REGION_ID = "paketo-barcode-scanner";
 const CAMERA_START_TIMEOUT_MS = 15000;
 
-const SCAN_CONFIG = {
-  fps: 10,
-  qrbox: { width: 320, height: 100 },
-  aspectRatio: 1.7777778,
+/** Full-frame scan works much better for horizontal Code 128 labels. */
+const HTML5_SCAN_CONFIG = {
+  fps: 20,
+  disableFlip: true,
 };
 
 async function warmUpCameraAccess() {
   const tries = [
-    { video: { facingMode: { ideal: "environment" } } },
+    { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
     { video: { facingMode: "user" } },
     { video: true },
   ];
@@ -47,12 +47,72 @@ function sortCameras(cameras) {
   });
 }
 
-async function startLiveScanner(onBarcode) {
+function supportsNativeBarcode() {
+  return typeof window !== "undefined" && "BarcodeDetector" in window;
+}
+
+/** Chrome / Edge / Android — native Code 128 detection on video frames. */
+async function startNativeBarcodeScanner(regionId, onRawCode) {
+  const host = document.getElementById(regionId);
+  if (!host) throw new Error("Scanner element missing");
+
+  host.innerHTML = "";
+  const video = document.createElement("video");
+  video.playsInline = true;
+  video.muted = true;
+  video.autoplay = true;
+  video.className = "scanner-native-video";
+  host.appendChild(video);
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    },
+  });
+  video.srcObject = stream;
+  await video.play();
+
+  // eslint-disable-next-line no-undef
+  const detector = new BarcodeDetector({ formats: ["code_128"] });
+  let active = true;
+
+  const tick = async () => {
+    if (!active) return;
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      try {
+        const codes = await detector.detect(video);
+        for (const code of codes) {
+          if (onRawCode(code.rawValue || "")) {
+            active = false;
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+        }
+      } catch {
+        // skip frame
+      }
+    }
+    if (active) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  return {
+    kind: "native",
+    stop: async () => {
+      active = false;
+      stream.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    },
+  };
+}
+
+async function startHtml5Scanner(onRawCode) {
   await warmUpCameraAccess();
 
   const host = document.getElementById(SCANNER_REGION_ID);
   if (!host) throw new Error("Scanner element missing");
-
   host.innerHTML = "";
 
   const cameras = await Html5Qrcode.getCameras();
@@ -65,8 +125,14 @@ async function startLiveScanner(onBarcode) {
       verbose: false,
     });
     try {
-      await scanner.start(camera.id, SCAN_CONFIG, onBarcode, () => {});
-      return scanner;
+      await scanner.start(camera.id, HTML5_SCAN_CONFIG, onRawCode, () => {});
+      return {
+        kind: "html5",
+        stop: async () => {
+          try { await scanner.stop(); } catch { /* ignore */ }
+          try { await scanner.clear(); } catch { /* ignore */ }
+        },
+      };
     } catch (err) {
       lastError = err;
       try { await scanner.clear(); } catch { /* ignore */ }
@@ -74,6 +140,17 @@ async function startLiveScanner(onBarcode) {
     }
   }
   throw lastError ?? new Error("Camera unavailable");
+}
+
+async function startLiveScanner(onRawCode) {
+  if (supportsNativeBarcode()) {
+    try {
+      return await startNativeBarcodeScanner(SCANNER_REGION_ID, onRawCode);
+    } catch {
+      // fall through to html5-qrcode
+    }
+  }
+  return startHtml5Scanner(onRawCode);
 }
 
 export function extractOrderId(raw) {
@@ -84,6 +161,19 @@ export function extractOrderId(raw) {
 }
 
 async function decodeBarcodeFile(file) {
+  if (supportsNativeBarcode()) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      // eslint-disable-next-line no-undef
+      const detector = new BarcodeDetector({ formats: ["code_128"] });
+      const codes = await detector.detect(bitmap);
+      bitmap.close();
+      if (codes.length) return codes[0].rawValue || "";
+    } catch {
+      // fall through
+    }
+  }
+
   const tempId = "barcode-file-decode";
   let host = document.getElementById(tempId);
   if (!host) {
@@ -148,7 +238,6 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
     scannerRef.current = null;
     if (!scanner) return;
     try { await scanner.stop(); } catch { /* ignore */ }
-    try { await scanner.clear(); } catch { /* ignore */ }
   }, []);
 
   const handlePhoto = async (e) => {
@@ -188,17 +277,17 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (token !== startTokenRef.current) return;
 
-      const onBarcode = (decodedText) => {
-        if (handled.current) return;
-        if (!tryDecode(decodedText)) return;
+      const onRawCode = (raw) => {
+        if (handled.current) return false;
+        if (!tryDecode(raw)) return false;
         handled.current = true;
         scannerRef.current?.stop().catch(() => {});
+        return true;
       };
 
-      const scanner = await startLiveScanner(onBarcode);
+      const scanner = await startLiveScanner(onRawCode);
       if (token !== startTokenRef.current) {
         try { await scanner.stop(); } catch { /* ignore */ }
-        try { await scanner.clear(); } catch { /* ignore */ }
         return;
       }
 
@@ -233,7 +322,9 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       <div className="scanner-header">
         <div className="min-w-0 pr-2">
           <h2 className="font-display text-lg font-bold text-white">{t("batch.scanBarcode")}</h2>
-          <p className="text-sm text-white/75 mt-1">{t("batch.scanFrameHint")}</p>
+          <p className="text-sm text-white/75 mt-1">
+            {mode === "live" ? t("batch.scanLiveHint") : t("batch.scanFrameHint")}
+          </p>
         </div>
         <button type="button" onClick={onClose} className="scanner-close" aria-label={t("common.cancel")}>
           <X className="h-5 w-5" />
@@ -243,15 +334,16 @@ export function OrderIdScannerModal({ open, onClose, onScan }) {
       <div className="scanner-viewport">
         <div id={SCANNER_REGION_ID} className="scanner-region" />
 
-        <div className="scanner-frame-wrap" aria-hidden="true">
-          <div className="scanner-frame-box">
-            <span className="scanner-corner scanner-corner-tl" />
-            <span className="scanner-corner scanner-corner-tr" />
-            <span className="scanner-corner scanner-corner-bl" />
-            <span className="scanner-corner scanner-corner-br" />
-            <div className="scanner-scan-line" />
+        {mode === "live" && (
+          <div className="scanner-frame-wrap" aria-hidden="true">
+            <div className="scanner-frame-box scanner-frame-box--barcode">
+              <span className="scanner-corner scanner-corner-tl" />
+              <span className="scanner-corner scanner-corner-tr" />
+              <span className="scanner-corner scanner-corner-bl" />
+              <span className="scanner-corner scanner-corner-br" />
+            </div>
           </div>
-        </div>
+        )}
 
         {mode === "starting" && (
           <div className="scanner-loading">
