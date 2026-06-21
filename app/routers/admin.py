@@ -13,12 +13,14 @@ from app.datetime_util import now_local
 from app.deps import Admin
 from app.platform_db import (
     SUBSCRIPTION_STATUSES,
-    ensure_default_product,
+    ensure_subscription_active_if_unsuspended,
     extend_subscription,
     set_initial_subscription,
+    subtract_subscription,
     sync_subscription_expiry,
     user_platform_row,
 )
+from app.stats_service import orders_for_user, statistics_for_user, timeline_for_user
 from app.username import normalize_username, validate_username
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -39,10 +41,15 @@ class AdminUpdateUserRequest(BaseModel):
     is_active: bool | None = None
     subscription_status: Literal["active", "trial", "expired", "suspended"] | None = None
     add_subscription_days: int | None = Field(default=None, ge=1, le=3650)
+    subtract_subscription_days: int | None = Field(default=None, ge=1, le=3650)
     role: Literal["admin", "user"] | None = None
 
 
 class AddSubscriptionRequest(BaseModel):
+    days: int = Field(ge=1, le=3650)
+
+
+class SubtractSubscriptionRequest(BaseModel):
     days: int = Field(ge=1, le=3650)
 
 
@@ -127,7 +134,6 @@ def admin_create_user(body: AdminCreateUserRequest, admin: Admin):
         )
         user_id = cursor.lastrowid
         set_initial_subscription(conn, user_id, body.subscription_days)
-        ensure_default_product(conn, user_id)
         row = conn.execute(
             """
             SELECT id, username, name, role, is_active,
@@ -168,6 +174,71 @@ def admin_add_subscription(user_id: int, body: AddSubscriptionRequest, admin: Ad
     return {"user": user_platform_row(updated)}
 
 
+@router.post("/users/{user_id}/subscription/subtract")
+def admin_subtract_subscription(user_id: int, body: SubtractSubscriptionRequest, admin: Admin):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, role FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if row["role"] == "admin":
+            raise HTTPException(status_code=400, detail="Admins have unlimited access.")
+        try:
+            subtract_subscription(conn, user_id, body.days)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updated = conn.execute(
+            """
+            SELECT id, username, name, role, is_active,
+                   subscription_status, subscription_expires_at,
+                   store_name, created_at
+            FROM users WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+    return {"user": user_platform_row(updated)}
+
+
+@router.get("/users/{user_id}/statistics")
+def admin_user_statistics(
+    user_id: int,
+    _admin: Admin,
+    date: str | None = None,
+    kind: str = "imported",
+):
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found.")
+        return statistics_for_user(conn, user_id, date=date, kind=kind)
+
+
+@router.get("/users/{user_id}/statistics/timeline")
+def admin_user_statistics_timeline(user_id: int, _admin: Admin, days: int = 30):
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found.")
+        return timeline_for_user(conn, user_id, days=days)
+
+
+@router.get("/users/{user_id}/orders")
+def admin_user_orders(
+    user_id: int,
+    _admin: Admin,
+    status: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+):
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found.")
+        return orders_for_user(conn, user_id, limit=limit, offset=offset, status=status)
+
+
 @router.patch("/users/{user_id}")
 def admin_update_user(user_id: int, body: AdminUpdateUserRequest, admin: Admin):
     if user_id == admin["id"] and body.is_active is False:
@@ -201,6 +272,11 @@ def admin_update_user(user_id: int, body: AdminUpdateUserRequest, admin: Admin):
                 extend_subscription(conn, user_id, body.add_subscription_days)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if body.subtract_subscription_days is not None:
+            try:
+                subtract_subscription(conn, user_id, body.subtract_subscription_days)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if body.role is not None:
             updates.append("role = ?")
             params.append(body.role)
@@ -208,12 +284,15 @@ def admin_update_user(user_id: int, body: AdminUpdateUserRequest, admin: Admin):
             updates.append("password_hash = ?")
             params.append(hash_password(body.password))
 
-        if not updates and body.add_subscription_days is None:
+        if not updates and body.add_subscription_days is None and body.subtract_subscription_days is None:
             raise HTTPException(status_code=400, detail="No changes provided.")
 
         if updates:
             params.append(user_id)
             conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+
+        if body.subscription_status == "active":
+            ensure_subscription_active_if_unsuspended(conn, user_id)
 
         sync_subscription_expiry(conn, user_id)
 

@@ -30,6 +30,7 @@ from app.places_rs import resolve_address
 from app.scheduler import refresh_lead_tracking, start_scheduler, stop_scheduler
 from app.telegram_bot import notify_user_tracking_run
 from app.status import MANUAL_STATUSES, STATUS_LABELS, display_status, is_trackable_lead, label_for
+from app.stats_service import statistics_for_user, timeline_for_user
 from app.aks_client import reset_session
 from app.finance import campaign_stats, eur_to_rsd, return_fee_eur
 from app.finance_db import (
@@ -54,7 +55,7 @@ from app.finance_db import (
 from app.aks_settlement import parse_settlement_file
 from app.datetime_util import local_date, now_local
 from app.deps import User, get_current_user
-from app.platform_db import ensure_default_product, product_pricing, set_initial_subscription, user_platform_row
+from app.platform_db import product_pricing, set_initial_subscription, user_platform_row
 from app.security import (
     SecurityHeadersMiddleware,
     check_auth_rate_limit,
@@ -91,7 +92,6 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(admin_router.router)
 app.include_router(products_router.router)
 app.include_router(telegram_router.router)
-init_db()
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 LEGACY_STATIC = BASE_DIR / "static"
@@ -124,7 +124,7 @@ def _insert_user(conn, username: str, password_hash: str, name: str) -> int:
 
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=30)
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=8)
 
 
 class LoginRequest(BaseModel):
@@ -596,7 +596,6 @@ def register(body: RegisterRequest, request: Request):
 
         user_id = _insert_user(conn, username, hash_password(body.password), username)
         set_initial_subscription(conn, user_id, 30)
-        ensure_default_product(conn, user_id)
         user = conn.execute(
             """
             SELECT id, username, name, role, is_active,
@@ -954,101 +953,22 @@ def dashboard_today(user: User):
 
 @app.get("/api/statistics/timeline")
 def statistics_timeline(user: User, days: int = 30):
-    from datetime import timedelta
-
-    days = max(7, min(days, 90))
-    today = date.fromisoformat(local_date(now_local()))
-    start = today - timedelta(days=days - 1)
-
     with get_connection() as conn:
-        total_delivered = conn.execute(
-            """
-            SELECT COUNT(*) FROM leads l
-            JOIN batches b ON b.id = l.batch_id
-            WHERE b.user_id = ? AND l.lifecycle_status = 'delivered'
-            """,
-            (user["id"],),
-        ).fetchone()[0]
+        return timeline_for_user(conn, user["id"], days=days)
 
-        total_imported = conn.execute(
-            """
-            SELECT COUNT(*) FROM leads l
-            JOIN batches b ON b.id = l.batch_id
-            WHERE b.user_id = ?
-            """,
-            (user["id"],),
-        ).fetchone()[0]
 
-        rows = conn.execute(
-            """
-            SELECT date(l.imported_at) AS d, COUNT(*) AS cnt
-            FROM leads l
-            JOIN batches b ON b.id = l.batch_id
-            WHERE b.user_id = ?
-              AND l.imported_at IS NOT NULL
-              AND date(l.imported_at) >= ?
-            GROUP BY date(l.imported_at)
-            ORDER BY d ASC
-            """,
-            (user["id"], start.isoformat()),
-        ).fetchall()
-
-        delivered_rows = conn.execute(
-            """
-            SELECT date(l.tracking_updated_at) AS d, COUNT(*) AS cnt
-            FROM leads l
-            JOIN batches b ON b.id = l.batch_id
-            WHERE b.user_id = ?
-              AND l.lifecycle_status = 'delivered'
-              AND l.tracking_updated_at IS NOT NULL
-              AND date(l.tracking_updated_at) >= ?
-            GROUP BY date(l.tracking_updated_at)
-            ORDER BY d ASC
-            """,
-            (user["id"], start.isoformat()),
-        ).fetchall()
-
-    imported_by_day = {r["d"]: r["cnt"] for r in rows}
-    delivered_by_day = {r["d"]: r["cnt"] for r in delivered_rows}
-
-    timeline = []
-    current = start
-    while current <= today:
-        d = current.isoformat()
-        timeline.append({
-            "date": d,
-            "imported": imported_by_day.get(d, 0),
-            "delivered": delivered_by_day.get(d, 0),
-        })
-        current += timedelta(days=1)
-
-    delivered_in_period = sum(delivered_by_day.values())
-    imported_in_period = sum(imported_by_day.values())
-    active_delivery_days = sum(1 for v in delivered_by_day.values() if v > 0)
-    active_import_days = sum(1 for v in imported_by_day.values() if v > 0)
-
-    peak_date, peak_count = None, 0
-    if delivered_by_day:
-        peak_date, peak_count = max(delivered_by_day.items(), key=lambda x: x[1])
-
-    return {
-        "days": days,
-        "timeline": timeline,
-        "summary": {
-            "total_delivered": total_delivered,
-            "total_imported": total_imported,
-            "delivered_in_period": delivered_in_period,
-            "imported_in_period": imported_in_period,
-            "avg_delivered_per_day": round(
-                delivered_in_period / active_delivery_days, 1,
-            ) if active_delivery_days else 0,
-            "avg_imported_per_day": round(
-                imported_in_period / active_import_days, 1,
-            ) if active_import_days else 0,
-            "peak_delivery_date": peak_date,
-            "peak_delivery_count": peak_count,
-        },
-    }
+# ── Statistics ───────────────────────────────────────────────────
+@app.get("/api/statistics")
+def get_statistics(
+    user: User,
+    date: str | None = None,
+    batch_id: int | None = None,
+    kind: str = "imported",
+):
+    with get_connection() as conn:
+        return statistics_for_user(
+            conn, user["id"], date=date, batch_id=batch_id, kind=kind,
+        )
 
 
 @app.post("/api/leads/parse-preview")
@@ -1065,73 +985,6 @@ def parse_preview(body: ParsePreviewRequest, user: User):
         "count": len(parsed.leads),
         "new_count": len(new_leads),
         "duplicate_count": len(parsed.leads) - len(new_leads),
-    }
-
-
-# ── Statistics ───────────────────────────────────────────────────
-@app.get("/api/statistics")
-def get_statistics(
-    user: User,
-    date: str | None = None,
-    batch_id: int | None = None,
-    kind: str = "imported",
-):
-    return statistics(user, date=date, batch_id=batch_id, kind=kind)
-
-
-def statistics(
-    user: User,
-    date: str | None = None,
-    batch_id: int | None = None,
-    kind: str = "imported",
-):
-    with get_connection() as conn:
-        query = """
-            SELECT l.lifecycle_status, COUNT(*) AS cnt
-            FROM leads l
-            JOIN batches b ON b.id = l.batch_id
-            WHERE b.user_id = ?
-        """
-        params: list[Any] = [user["id"]]
-
-        if batch_id:
-            query += " AND b.id = ?"
-            params.append(batch_id)
-        elif date:
-            if kind == "delivered":
-                query += " AND l.lifecycle_status = 'delivered' AND date(l.tracking_updated_at) = ?"
-            else:
-                query += " AND date(b.created_at) = ?"
-            params.append(date)
-
-        query += " GROUP BY l.lifecycle_status"
-        rows = conn.execute(query, params).fetchall()
-
-        total = sum(r["cnt"] for r in rows)
-        breakdown = {
-            r["lifecycle_status"]: r["cnt"] for r in rows
-        }
-
-    ordered_keys = [
-        "registered", "sent", "in_warehouse", "in_transit",
-        "out_for_delivery", "delivered", "returned_to_warehouse",
-        "delivery_canceled", "return_pending", "rejected", "returned", "unknown",
-    ]
-    items = []
-    for key in ordered_keys:
-        count = breakdown.get(key, 0)
-        if count or total == 0:
-            items.append({
-                "status": key,
-                "label": label_for(key),
-                "count": count,
-                "percent": round(count / total * 100, 1) if total else 0,
-            })
-
-    return {
-        "total": total,
-        "items": items,
-        "status_labels": STATUS_LABELS,
     }
 
 

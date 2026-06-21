@@ -16,7 +16,12 @@ from app.finance_db import sync_stock_on_tracking_update
 from app.status import categorize_aks_status
 from app.aks_client import reset_session, track_order
 from app.telegram_bot import notify_users_scheduled_summary
-from app.tracking_schedule import TRACKING_HOURS_CRON, TRACKING_SCHEDULE_LABEL, TRACKING_TIMEZONE
+from app.tracking_schedule import (
+    TRACKING_DAYS_CRON,
+    TRACKING_HOURS_CRON,
+    TRACKING_SCHEDULE_LABEL,
+    TRACKING_TIMEZONE,
+)
 
 logger = logging.getLogger("posta.scheduler")
 _scheduler: BackgroundScheduler | None = None
@@ -93,6 +98,13 @@ def refresh_lead_tracking(lead_id: int, order_id: str) -> tuple[bool, str | None
 
 
 def run_scheduled_tracking() -> None:
+    from datetime import datetime
+
+    now = datetime.now(TRACKING_TIMEZONE)
+    if now.weekday() >= 5:
+        logger.info("Skipping scheduled AKS tracking on weekend (Sat/Sun)")
+        return
+
     logger.info("Starting scheduled AKS tracking run...")
     with get_connection() as conn:
         leads = conn.execute(
@@ -146,6 +158,7 @@ def start_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(
             hour=TRACKING_HOURS_CRON,
             minute=0,
+            day_of_week=TRACKING_DAYS_CRON,
             timezone=TRACKING_TIMEZONE,
         ),
         id="aks_tracking",
@@ -153,7 +166,7 @@ def start_scheduler() -> BackgroundScheduler:
     )
     _scheduler.start()
     logger.info(
-        "AKS scheduler started (%s Belgrade time, Mon–Sun)",
+        "AKS scheduler started (%s)",
         TRACKING_SCHEDULE_LABEL,
     )
     return _scheduler

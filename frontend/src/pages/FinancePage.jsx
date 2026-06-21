@@ -120,11 +120,8 @@ export default function FinancePage() {
       setData(res);
       const c = res.config || {};
       setConfigForm({
-        sale_price_rsd: String(c.sale_price_rsd ?? 1000),
-        product_cost_eur: String(c.product_cost_eur ?? 2),
         shipping_cost_usd: String(c.shipping_cost_usd ?? 2),
         return_fee_rsd: String(c.return_fee_rsd ?? 500),
-        units_per_order: String(c.units_per_order ?? 2),
         eur_rsd: String(c.eur_rsd ?? 117),
         usd_rsd: String(c.usd_rsd ?? 101),
       });
@@ -307,11 +304,8 @@ export default function FinancePage() {
       await api("/finance/config", {
         method: "PATCH",
         body: JSON.stringify({
-          sale_price_rsd: parseFloat(configForm.sale_price_rsd),
-          product_cost_eur: parseFloat(configForm.product_cost_eur),
           shipping_cost_usd: parseFloat(configForm.shipping_cost_usd),
           return_fee_rsd: parseFloat(configForm.return_fee_rsd),
-          units_per_order: parseInt(configForm.units_per_order, 10),
           eur_rsd: parseFloat(configForm.eur_rsd),
           usd_rsd: parseFloat(configForm.usd_rsd),
         }),
@@ -387,17 +381,17 @@ export default function FinancePage() {
             <Pencil className={`h-4 w-4 shrink-0 text-themed-subtle transition ${configOpen ? "rotate-0" : ""}`} />
           </button>
           {configOpen && (
-            <form onSubmit={saveConfig} className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <input className="input-field min-h-[44px]" type="number" step="1" min="1" placeholder={t("settings.priceRsd")} value={configForm.sale_price_rsd} onChange={(e) => setConfigForm({ ...configForm, sale_price_rsd: e.target.value })} />
-              <input className="input-field min-h-[44px]" type="number" step="0.01" min="0" placeholder={t("settings.productCostEur")} value={configForm.product_cost_eur} onChange={(e) => setConfigForm({ ...configForm, product_cost_eur: e.target.value })} />
+            <form onSubmit={saveConfig} className="mt-4 space-y-3">
+              <p className="text-sm text-themed-muted">{t("finance.configProductHint")}</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <input className="input-field min-h-[44px]" type="number" step="0.01" min="0" placeholder={t("finance.shippingCostUsd")} value={configForm.shipping_cost_usd} onChange={(e) => setConfigForm({ ...configForm, shipping_cost_usd: e.target.value })} />
               <input className="input-field min-h-[44px]" type="number" step="1" min="0" placeholder={t("finance.returnFeeRsd")} value={configForm.return_fee_rsd} onChange={(e) => setConfigForm({ ...configForm, return_fee_rsd: e.target.value })} />
-              <input className="input-field min-h-[44px]" type="number" step="1" min="1" placeholder={t("finance.unitsPerOrder")} value={configForm.units_per_order} onChange={(e) => setConfigForm({ ...configForm, units_per_order: e.target.value })} />
               <input className="input-field min-h-[44px]" type="number" step="0.01" min="1" placeholder={t("finance.eurRsd")} value={configForm.eur_rsd} onChange={(e) => setConfigForm({ ...configForm, eur_rsd: e.target.value })} />
               <input className="input-field min-h-[44px]" type="number" step="0.01" min="1" placeholder={t("finance.usdRsd")} value={configForm.usd_rsd} onChange={(e) => setConfigForm({ ...configForm, usd_rsd: e.target.value })} />
               <button type="submit" disabled={configBusy} className="btn-primary min-h-[44px] sm:col-span-2 lg:col-span-3">
                 {configBusy ? t("common.loading") : t("common.save")}
               </button>
+              </div>
             </form>
           )}
         </div>

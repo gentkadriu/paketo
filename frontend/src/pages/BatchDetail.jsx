@@ -23,6 +23,18 @@ import { OrderIdScanButton, OrderIdScannerModal } from "../components/OrderIdSca
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
+function findNextLeadWithoutId(leads, afterLeadId) {
+  const sorted = [...leads].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const idx = sorted.findIndex((l) => l.id === afterLeadId);
+  for (let i = idx + 1; i < sorted.length; i += 1) {
+    if (!(sorted[i].order_id || "").trim()) return sorted[i].id;
+  }
+  for (let i = 0; i < idx; i += 1) {
+    if (!(sorted[i].order_id || "").trim()) return sorted[i].id;
+  }
+  return null;
+}
+
 export default function BatchDetail() {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
@@ -421,6 +433,9 @@ export default function BatchDetail() {
       setBulkIdsText("");
       refreshSearch();
       show(t("batch.bulkIdsDone", { count: data.applied }));
+      if (data.unused_ids > 0) {
+        show(t("batch.bulkIdsExtra", { count: data.unused_ids }));
+      }
     } catch (e) {
       show(e.message, "error");
     } finally {
@@ -1013,10 +1028,25 @@ export default function BatchDetail() {
       <OrderIdScannerModal
         open={scanLeadId != null}
         onClose={() => setScanLeadId(null)}
-        onScan={(scanned) => {
-          const lead = batch?.leads?.find((l) => l.id === scanLeadId);
-          if (lead) handleOrderIdChange(lead.id, lead.order_id, scanned);
-          setScanLeadId(null);
+        onScan={async (scanned) => {
+          const leadId = scanLeadId;
+          if (!leadId) return;
+          const ok = await persistOrderId(leadId, scanned);
+          if (!ok) return;
+          setBatch((b) => {
+            if (!b) {
+              setScanLeadId(null);
+              return b;
+            }
+            const nextId = findNextLeadWithoutId(b.leads, leadId);
+            if (nextId) {
+              show(t("batch.scanNextOrder"));
+            } else {
+              show(t("batch.scanAllDone"));
+            }
+            setScanLeadId(nextId);
+            return b;
+          });
         }}
       />
     </div>

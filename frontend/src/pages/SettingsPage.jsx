@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Package, Pencil, Plus, Store, Star, Trash2, X } from "lucide-react";
+import { KeyRound, Package, Pencil, Plus, Store, Star, Trash2, User, X, Send, ExternalLink, Unlink } from "lucide-react";
 import { api } from "../api";
 import { useToast } from "../context/ToastContext";
 import { useI18n } from "../context/I18nContext";
@@ -9,11 +9,11 @@ import ConfirmDialog from "../components/ConfirmDialog";
 const emptyProduct = {
   product_code: "",
   name: "",
-  sale_price_rsd: "1000",
-  units_per_offer: "2",
-  product_cost_eur: "2",
+  sale_price_rsd: "",
+  units_per_offer: "",
+  product_cost_eur: "",
   delivery_fee_rsd: "490",
-  is_default: false,
+  is_default: true,
 };
 
 export default function SettingsPage() {
@@ -21,6 +21,8 @@ export default function SettingsPage() {
   const { user, refreshUser } = useAuth();
   const { show } = useToast();
   const [data, setData] = useState(null);
+  const [profileForm, setProfileForm] = useState({ username: "", name: "" });
+  const [defaultForm, setDefaultForm] = useState(null);
   const [storeName, setStoreName] = useState("");
   const [form, setForm] = useState(emptyProduct);
   const [busy, setBusy] = useState(false);
@@ -33,16 +35,147 @@ export default function SettingsPage() {
   const [editForm, setEditForm] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [telegram, setTelegram] = useState(null);
+  const [telegramLink, setTelegramLink] = useState(null);
+  const [telegramBusy, setTelegramBusy] = useState(false);
+
+  const loadTelegram = useCallback(() => {
+    api("/settings/telegram")
+      .then(setTelegram)
+      .catch(() => setTelegram({ configured: false, linked: false }));
+  }, []);
 
   const load = useCallback(() => {
     api("/settings").then((res) => {
       setData(res);
+      setProfileForm({
+        username: res.username || "",
+        name: res.name || "",
+      });
       setStoreName(res.store_name || "");
+      const def = res.default_product;
+      if (def) {
+        setDefaultForm({
+          name: def.name,
+          sale_price_rsd: String(def.sale_price_rsd),
+          units_per_offer: String(def.units_per_offer),
+          product_cost_eur: def.product_cost_eur != null ? String(def.product_cost_eur) : "",
+          delivery_fee_rsd: String(def.delivery_fee_rsd ?? 490),
+        });
+      } else {
+        setDefaultForm(null);
+      }
       if ((res.products || []).length === 0) setShowAddForm(true);
     }).catch((e) => show(e.message, "error"));
   }, [show]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadTelegram(); }, [load, loadTelegram]);
+
+  const connectTelegram = async () => {
+    setTelegramBusy(true);
+    try {
+      const res = await api("/settings/telegram/link", { method: "POST" });
+      setTelegramLink(res);
+      loadTelegram();
+      show(t("settings.telegramLinkReady"));
+    } catch (err) {
+      show(err.message, "error");
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const unlinkTelegram = async () => {
+    setTelegramBusy(true);
+    try {
+      await api("/settings/telegram/unlink", { method: "POST" });
+      setTelegramLink(null);
+      loadTelegram();
+      show(t("settings.telegramUnlinked"));
+    } catch (err) {
+      show(err.message, "error");
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const toggleTelegram = async (enabled) => {
+    setTelegramBusy(true);
+    try {
+      await api("/settings/telegram", {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      });
+      loadTelegram();
+      show(enabled ? t("settings.telegramEnabled") : t("settings.telegramDisabled"));
+    } catch (err) {
+      show(err.message, "error");
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const testTelegram = async () => {
+    setTelegramBusy(true);
+    try {
+      await api("/settings/telegram/test", { method: "POST" });
+      show(t("settings.telegramTestSent"));
+    } catch (err) {
+      show(err.message, "error");
+    } finally {
+      setTelegramBusy(false);
+    }
+  };
+
+  const saveProfile = async (e) => {
+    e.preventDefault();
+    if (!profileForm.username.trim()) return show(t("settings.usernameRequired"), "error");
+    if (!profileForm.name.trim()) return show(t("settings.displayNameRequired"), "error");
+    setBusy(true);
+    try {
+      await api("/settings/profile", {
+        method: "PATCH",
+        body: JSON.stringify({
+          username: profileForm.username.trim(),
+          name: profileForm.name.trim(),
+        }),
+      });
+      await refreshUser();
+      show(t("settings.profileSaved"));
+      load();
+    } catch (err) {
+      show(err.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveDefaultProduct = async (e) => {
+    e.preventDefault();
+    const def = data?.default_product;
+    if (!def || !defaultForm?.name?.trim()) {
+      return show(t("settings.productNameRequired"), "error");
+    }
+    setBusy(true);
+    try {
+      await api(`/products/${def.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: defaultForm.name.trim(),
+          sale_price_rsd: parseFloat(defaultForm.sale_price_rsd),
+          units_per_offer: parseInt(defaultForm.units_per_offer, 10),
+          product_cost_eur: defaultForm.product_cost_eur ? parseFloat(defaultForm.product_cost_eur) : null,
+          delivery_fee_rsd: parseFloat(defaultForm.delivery_fee_rsd || "490"),
+        }),
+      });
+      show(t("settings.defaultProductSaved"));
+      load();
+    } catch (err) {
+      show(err.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const saveStore = async (e) => {
     e.preventDefault();
@@ -179,9 +312,6 @@ export default function SettingsPage() {
   };
 
   const requestDeleteProduct = (p) => {
-    if (data.products.length <= 1) {
-      return show(t("settings.cannotDeleteLast"), "error");
-    }
     setDeleteTarget(p);
   };
 
@@ -208,6 +338,161 @@ export default function SettingsPage() {
       <div>
         <h1 className="font-display text-xl sm:text-2xl font-bold text-themed">{t("settings.title")}</h1>
         <p className="mt-1 text-sm text-themed-muted">{t("settings.subtitle")}</p>
+      </div>
+
+      <form onSubmit={saveProfile} className="glass p-4 sm:p-6 space-y-3">
+        <h2 className="font-semibold text-themed flex items-center gap-2">
+          <User className="h-5 w-5 text-sky-400" />
+          {t("settings.account")}
+        </h2>
+        <p className="text-sm text-themed-muted">{t("settings.accountHint")}</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input
+            className="input-field min-h-[48px]"
+            placeholder={t("auth.username")}
+            value={profileForm.username}
+            onChange={(e) => setProfileForm({ ...profileForm, username: e.target.value })}
+            autoComplete="username"
+            required
+          />
+          <input
+            className="input-field min-h-[48px]"
+            placeholder={t("settings.displayName")}
+            value={profileForm.name}
+            onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+            autoComplete="name"
+            required
+          />
+        </div>
+        <button type="submit" disabled={busy} className="btn-primary w-full sm:w-auto min-h-[48px]">
+          {t("common.save")}
+        </button>
+      </form>
+
+      {data.default_product && defaultForm ? (
+        <form onSubmit={saveDefaultProduct} className="glass p-4 sm:p-6 space-y-3">
+          <h2 className="font-semibold text-themed flex items-center gap-2">
+            <Star className="h-5 w-5 text-amber-400 fill-current" />
+            {t("settings.defaultProduct")}
+          </h2>
+          <p className="text-sm text-themed-muted">{t("settings.defaultProductHint")}</p>
+          <div className="text-xs font-mono text-themed-muted">{data.default_product.product_code}</div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <input
+              className="input-field min-h-[48px] sm:col-span-2"
+              placeholder={t("settings.productName")}
+              value={defaultForm.name}
+              onChange={(e) => setDefaultForm({ ...defaultForm, name: e.target.value })}
+              required
+            />
+            <input
+              className="input-field min-h-[48px]"
+              type="number"
+              min="1"
+              placeholder={t("settings.priceRsd")}
+              value={defaultForm.sale_price_rsd}
+              onChange={(e) => setDefaultForm({ ...defaultForm, sale_price_rsd: e.target.value })}
+              required
+            />
+            <input
+              className="input-field min-h-[48px]"
+              type="number"
+              min="1"
+              max="20"
+              placeholder={t("settings.unitsPerOffer")}
+              value={defaultForm.units_per_offer}
+              onChange={(e) => setDefaultForm({ ...defaultForm, units_per_offer: e.target.value })}
+              required
+            />
+            <input
+              className="input-field min-h-[48px]"
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder={t("settings.productCostEur")}
+              value={defaultForm.product_cost_eur}
+              onChange={(e) => setDefaultForm({ ...defaultForm, product_cost_eur: e.target.value })}
+            />
+            <input
+              className="input-field min-h-[48px]"
+              type="number"
+              min="0"
+              placeholder={t("settings.deliveryFeeRsd")}
+              value={defaultForm.delivery_fee_rsd}
+              onChange={(e) => setDefaultForm({ ...defaultForm, delivery_fee_rsd: e.target.value })}
+            />
+          </div>
+          <button type="submit" disabled={busy} className="btn-primary w-full sm:w-auto min-h-[48px]">
+            {t("settings.saveDefaultProduct")}
+          </button>
+        </form>
+      ) : (
+        <div className="glass p-4 sm:p-6">
+          <h2 className="font-semibold text-themed flex items-center gap-2">
+            <Star className="h-5 w-5 text-amber-400" />
+            {t("settings.defaultProduct")}
+          </h2>
+          <p className="text-sm text-themed-muted mt-2">{t("settings.noDefaultProduct")}</p>
+        </div>
+      )}
+
+      <div className="glass p-4 sm:p-6 space-y-3">
+        <h2 className="font-semibold text-themed flex items-center gap-2">
+          <Send className="h-5 w-5 text-sky-400" />
+          {t("settings.telegram")}
+        </h2>
+        <p className="text-sm text-themed-muted">{t("settings.telegramHint")}</p>
+        {!telegram?.configured ? (
+          <p className="text-sm text-themed-muted">{t("settings.telegramNotConfigured")}</p>
+        ) : telegram.linked ? (
+          <div className="space-y-3">
+            <p className="text-sm text-emerald-400">{t("settings.telegramLinked")}</p>
+            {telegram.is_group && telegram.group_name && (
+              <p className="text-xs text-themed-muted">{t("settings.telegramGroup", { name: telegram.group_name })}</p>
+            )}
+            <label className="flex items-center gap-2 text-sm text-themed">
+              <input
+                type="checkbox"
+                checked={telegram.enabled}
+                disabled={telegramBusy}
+                onChange={(e) => toggleTelegram(e.target.checked)}
+              />
+              {t("settings.telegramNotifications")}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={telegramBusy} onClick={testTelegram} className="btn-secondary !py-2 text-xs">
+                {t("settings.telegramTest")}
+              </button>
+              <button type="button" disabled={telegramBusy} onClick={unlinkTelegram} className="btn-secondary !py-2 text-xs text-rose-400">
+                <Unlink className="h-3.5 w-3.5 inline mr-1" />
+                {t("settings.telegramDisconnect")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <button type="button" disabled={telegramBusy} onClick={connectTelegram} className="btn-primary min-h-[44px]">
+              {t("settings.telegramConnect")}
+            </button>
+            {(telegramLink?.link || telegram?.link_pending) && (
+              <div className="rounded-xl border border-themed p-3 space-y-2">
+                <p className="text-sm text-themed">{t("settings.telegramOpenBot")}</p>
+                {telegramLink?.link && (
+                  <a
+                    href={telegramLink.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-secondary inline-flex items-center gap-2 !py-2 text-xs"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    {t("settings.telegramOpenLink")}
+                  </a>
+                )}
+                <p className="text-xs text-themed-muted">{t("settings.telegramLinkExpires")}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <form onSubmit={changePassword} className="glass p-4 sm:p-6 space-y-3" autoComplete="on">
@@ -408,9 +693,8 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         onClick={() => requestDeleteProduct(p)}
-                        disabled={busy || data.products.length <= 1}
-                        className="btn-secondary !py-2 text-xs text-rose-400 disabled:opacity-40"
-                        title={data.products.length <= 1 ? t("settings.cannotDeleteLast") : undefined}
+                        disabled={busy}
+                        className="btn-secondary !py-2 text-xs text-rose-400"
                       >
                         <Trash2 className="h-3.5 w-3.5" /> {t("common.delete")}
                       </button>
@@ -495,7 +779,7 @@ export default function SettingsPage() {
         <label className="flex items-center gap-2 text-sm text-themed-muted">
           <input
             type="checkbox"
-            checked={form.is_default}
+            checked={form.is_default || data.products.length === 0}
             onChange={(e) => setForm({ ...form, is_default: e.target.checked })}
           />
           {t("settings.setAsDefault")}

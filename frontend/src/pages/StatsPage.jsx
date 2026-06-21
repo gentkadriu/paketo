@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { CalendarDays, TrendingUp, Package, CheckCircle2, BarChart3 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CalendarDays, TrendingUp, Package, CheckCircle2, BarChart3, Users } from "lucide-react";
 import { api, formatDate } from "../api";
 import { useI18n } from "../context/I18nContext";
+import { useAuth } from "../context/AuthContext";
 import StatusPill from "../components/StatusPill";
 import Select from "../components/Select";
 import TimelineChart from "../components/TimelineChart";
@@ -14,29 +15,72 @@ const PERIOD_OPTIONS = [
 
 export default function StatsPage() {
   const { t, ts } = useI18n();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [viewUserId, setViewUserId] = useState("");
   const [dates, setDates] = useState([]);
   const [date, setDate] = useState("");
   const [filterKind, setFilterKind] = useState("imported");
   const [periodDays, setPeriodDays] = useState("30");
   const [stats, setStats] = useState(null);
   const [timeline, setTimeline] = useState(null);
+  const [orders, setOrders] = useState(null);
+  const [orderStatus, setOrderStatus] = useState("");
+
+  const viewingOther = isAdmin && viewUserId !== "";
+  const statsBase = viewingOther ? `/admin/users/${viewUserId}` : "";
 
   useEffect(() => {
+    if (!isAdmin) return;
+    api("/admin/users")
+      .then((res) => setAdminUsers((res.users || []).filter((u) => u.role !== "admin")))
+      .catch(() => setAdminUsers([]));
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (viewingOther) {
+      setDates([]);
+      setDate("");
+      return;
+    }
     api(`/dashboard/dates?kind=${filterKind}`).then(setDates).catch(() => setDates([]));
     setDate("");
-  }, [filterKind]);
+  }, [filterKind, viewingOther]);
 
   useEffect(() => {
-    api(`/statistics/timeline?days=${periodDays}`).then(setTimeline).catch(() => {});
-  }, [periodDays]);
+    const path = viewingOther
+      ? `${statsBase}/statistics/timeline?days=${periodDays}`
+      : `/statistics/timeline?days=${periodDays}`;
+    api(path).then(setTimeline).catch(() => setTimeline(null));
+  }, [periodDays, statsBase, viewingOther]);
 
   useEffect(() => {
     const params = new URLSearchParams();
-    if (date) params.set("date", date);
+    if (date && !viewingOther) params.set("date", date);
     if (filterKind === "delivered") params.set("kind", "delivered");
     const q = params.toString() ? `?${params}` : "";
-    api(`/statistics${q}`).then(setStats);
-  }, [date, filterKind]);
+    const path = viewingOther ? `${statsBase}/statistics${q}` : `/statistics${q}`;
+    api(path).then(setStats).catch(() => setStats(null));
+  }, [date, filterKind, statsBase, viewingOther]);
+
+  useEffect(() => {
+    if (!viewingOther) {
+      setOrders(null);
+      return;
+    }
+    const params = new URLSearchParams({ limit: "500" });
+    if (orderStatus) params.set("status", orderStatus);
+    api(`${statsBase}/orders?${params}`)
+      .then(setOrders)
+      .catch(() => setOrders(null));
+  }, [viewingOther, statsBase, orderStatus]);
+
+  const selectedUser = useMemo(
+    () => adminUsers.find((u) => String(u.id) === viewUserId),
+    [adminUsers, viewUserId],
+  );
 
   if (!stats) return <div className="text-themed-muted">{t("stats.loading")}</div>;
 
@@ -59,15 +103,41 @@ export default function StatsPage() {
     },
   ] : [];
 
+  const userOptions = [
+    { value: "", label: t("stats.myStats") },
+    ...adminUsers.map((u) => ({
+      value: String(u.id),
+      label: u.store_name ? `${u.username} · ${u.store_name}` : u.username,
+    })),
+  ];
+
   return (
     <div className="animate-slide-up space-y-4 sm:space-y-6">
       <div>
         <h1 className="font-display text-xl sm:text-2xl font-bold text-themed">{t("stats.title")}</h1>
         <p className="mt-1 text-sm text-themed-muted">
-          {t("stats.subtitle", { count: stats.total })}
+          {viewingOther && selectedUser
+            ? t("stats.subtitleUser", { user: selectedUser.username, count: stats.total })
+            : t("stats.subtitle", { count: stats.total })}
           {stats.total > 0 && ` · ${t("stats.deliveryRate", { rate: deliveryRate })}`}
         </p>
       </div>
+
+      {isAdmin && adminUsers.length > 0 && (
+        <div className="glass p-3 sm:p-4">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-themed-subtle">
+            <Users className="inline h-3.5 w-3.5 mr-1 -mt-0.5" />
+            {t("stats.viewUser")}
+          </label>
+          <Select
+            fullWidth
+            compact
+            value={viewUserId}
+            onChange={setViewUserId}
+            options={userOptions}
+          />
+        </div>
+      )}
 
       {summaryCards.length > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
@@ -118,28 +188,30 @@ export default function StatsPage() {
               ]}
             />
           </div>
-          <div className="min-w-0">
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-themed-subtle">
-              {t("stats.filterDate")}
-            </label>
-            <Select
-              fullWidth
-              compact
-              value={date}
-              onChange={setDate}
-              options={[
-                { value: "", label: t("stats.allDates"), hint: t("common.allDates"), icon: CalendarDays },
-                ...dates.map((d) => ({
-                  value: d.date,
-                  label: formatDate(d.date),
-                  hint: filterKind === "delivered"
-                    ? t("stats.ordersOnDay", { count: d.batch_count })
-                    : `${d.batch_count} batches`,
-                  icon: CalendarDays,
-                })),
-              ]}
-            />
-          </div>
+          {!viewingOther && (
+            <div className="min-w-0">
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-themed-subtle">
+                {t("stats.filterDate")}
+              </label>
+              <Select
+                fullWidth
+                compact
+                value={date}
+                onChange={setDate}
+                options={[
+                  { value: "", label: t("stats.allDates"), hint: t("common.allDates"), icon: CalendarDays },
+                  ...dates.map((d) => ({
+                    value: d.date,
+                    label: formatDate(d.date),
+                    hint: filterKind === "delivered"
+                      ? t("stats.ordersOnDay", { count: d.batch_count })
+                      : `${d.batch_count} batches`,
+                    icon: CalendarDays,
+                  })),
+                ]}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -170,6 +242,56 @@ export default function StatsPage() {
           ))}
         </div>
       </div>
+
+      {viewingOther && orders && (
+        <div className="glass p-4 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h2 className="font-semibold text-themed">{t("stats.userOrders")}</h2>
+            <span className="text-xs text-themed-muted">{t("stats.ordersTotal", { count: orders.total })}</span>
+          </div>
+          <div className="mb-4 max-w-xs">
+            <Select
+              fullWidth
+              compact
+              value={orderStatus}
+              onChange={setOrderStatus}
+              options={[
+                { value: "", label: t("stats.allStatuses") },
+                ...stats.items.filter((i) => i.count > 0).map((i) => ({
+                  value: i.status,
+                  label: ts(i.status),
+                })),
+              ]}
+            />
+          </div>
+          {orders.orders.length === 0 ? (
+            <p className="text-sm text-themed-muted">{t("stats.noOrders")}</p>
+          ) : (
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-sm min-w-[520px]">
+                <thead>
+                  <tr className="text-left text-themed-muted text-xs uppercase">
+                    <th className="p-2">{t("stats.orderId")}</th>
+                    <th className="p-2">{t("stats.customer")}</th>
+                    <th className="p-2">{t("stats.batch")}</th>
+                    <th className="p-2">{t("stats.statusCol")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.orders.map((o) => (
+                    <tr key={o.id} className="border-t border-themed">
+                      <td className="p-2 font-mono text-xs">{o.order_id || "—"}</td>
+                      <td className="p-2 text-themed">{o.name || "—"}</td>
+                      <td className="p-2 text-themed-muted text-xs truncate max-w-[120px]">{o.batch_name}</td>
+                      <td className="p-2"><StatusPill status={o.status} label={ts(o.status)} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

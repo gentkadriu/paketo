@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.datetime_util import APP_TIMEZONE, add_days_local, days_until, now_local, parse_local_dt
 from app.finance_db import get_finance_config
@@ -162,7 +162,7 @@ def extend_subscription(conn, user_id: int, days: int) -> str:
     if days < 1:
         raise ValueError("Days must be at least 1.")
     row = conn.execute(
-        "SELECT subscription_expires_at FROM users WHERE id = ?",
+        "SELECT subscription_expires_at, subscription_status FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if not row:
@@ -176,14 +176,72 @@ def extend_subscription(conn, user_id: int, days: int) -> str:
             base = current
 
     new_expires = add_days_local(days, from_dt=base)
+    status = row["subscription_status"] or "active"
+    if status != "suspended":
+        status = "active"
     conn.execute(
         """
-        UPDATE users SET subscription_expires_at = ?, subscription_status = 'active'
+        UPDATE users SET subscription_expires_at = ?, subscription_status = ?
         WHERE id = ?
         """,
-        (new_expires, user_id),
+        (new_expires, status, user_id),
     )
     return new_expires
+
+
+def subtract_subscription(conn, user_id: int, days: int) -> str:
+    """Remove days from current expiry (not below now). Returns new expires_at."""
+    if days < 1:
+        raise ValueError("Days must be at least 1.")
+    row = conn.execute(
+        "SELECT subscription_expires_at, subscription_status FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row or not row["subscription_expires_at"]:
+        raise ValueError("No subscription expiry set.")
+
+    now = datetime.now(APP_TIMEZONE)
+    current = parse_local_dt(row["subscription_expires_at"])
+    new_dt = current - timedelta(days=days)
+    if new_dt < now:
+        new_dt = now
+
+    new_expires = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+    status = row["subscription_status"] or "active"
+    if status != "suspended":
+        status = "expired" if new_dt <= now else "active"
+    conn.execute(
+        """
+        UPDATE users SET subscription_expires_at = ?, subscription_status = ?
+        WHERE id = ?
+        """,
+        (new_expires, status, user_id),
+    )
+    return new_expires
+
+
+def ensure_subscription_active_if_unsuspended(conn, user_id: int, min_days: int = 1) -> None:
+    """When admin sets active, grant at least min_days if expiry is in the past."""
+    row = conn.execute(
+        """
+        SELECT subscription_expires_at, subscription_status
+        FROM users WHERE id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+    if not row or row["subscription_status"] == "suspended":
+        return
+    now = datetime.now(APP_TIMEZONE)
+    expires = row["subscription_expires_at"]
+    if not expires or parse_local_dt(expires) <= now:
+        new_expires = add_days_local(min_days, from_dt=now)
+        conn.execute(
+            """
+            UPDATE users SET subscription_expires_at = ?, subscription_status = 'active'
+            WHERE id = ?
+            """,
+            (new_expires, user_id),
+        )
 
 
 def set_initial_subscription(conn, user_id: int, days: int) -> str:
@@ -240,42 +298,26 @@ def get_default_product(conn, user_id: int):
 
 
 def ensure_default_product(conn, user_id: int) -> int | None:
-    existing = conn.execute(
-        "SELECT id FROM products WHERE user_id = ? LIMIT 1", (user_id,)
-    ).fetchone()
-    if existing:
-        if not conn.execute(
-            "SELECT 1 FROM products WHERE user_id = ? AND is_default = 1", (user_id,)
-        ).fetchone():
-            conn.execute(
-                "UPDATE products SET is_default = 1 WHERE id = ?",
-                (existing["id"],),
-            )
-        return existing["id"]
-
-    cfg = get_finance_config(conn, user_id)
-    ts = now_local()
-    cursor = conn.execute(
+    """Mark one active product as default if none is set. Never auto-creates products."""
+    row = conn.execute(
         """
-        INSERT INTO products (
-            user_id, product_code, name, sale_price_rsd, units_per_offer,
-            product_cost_eur, delivery_fee_rsd, is_default, is_active,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+        SELECT id FROM products
+        WHERE user_id = ? AND is_active = 1
+        ORDER BY id ASC LIMIT 1
         """,
-        (
-            user_id,
-            "DEFAULT-001",
-            "Default product",
-            float(cfg.get("sale_price_rsd", 1000)),
-            int(cfg.get("units_per_order", 2)),
-            float(cfg.get("product_cost_eur", 2)),
-            490.0,
-            ts,
-            ts,
-        ),
-    )
-    return cursor.lastrowid
+        (user_id,),
+    ).fetchone()
+    if not row:
+        return None
+    if not conn.execute(
+        "SELECT 1 FROM products WHERE user_id = ? AND is_active = 1 AND is_default = 1",
+        (user_id,),
+    ).fetchone():
+        conn.execute(
+            "UPDATE products SET is_default = 1 WHERE id = ?",
+            (row["id"],),
+        )
+    return row["id"]
 
 
 def normalize_product_code(code: str) -> str:
@@ -400,13 +442,6 @@ def delete_product(conn, user_id: int, product_id: int) -> dict:
     if not row["is_active"]:
         raise ValueError("Product already removed.")
 
-    active_count = conn.execute(
-        "SELECT COUNT(*) FROM products WHERE user_id = ? AND is_active = 1",
-        (user_id,),
-    ).fetchone()[0]
-    if active_count <= 1:
-        raise ValueError("Keep at least one product in your catalog.")
-
     batch_count = conn.execute(
         "SELECT COUNT(*) FROM batches WHERE user_id = ? AND product_id = ?",
         (user_id, product_id),
@@ -438,6 +473,32 @@ def delete_product(conn, user_id: int, product_id: int) -> dict:
 
     _sync_finance_from_default_product(conn, user_id)
     return {"ok": True, "batch_count": batch_count}
+
+
+def update_user_profile(
+    conn,
+    user_id: int,
+    *,
+    username: str | None = None,
+    name: str | None = None,
+) -> None:
+    from app.database import _column_exists
+
+    updates: list[str] = []
+    params: list[object] = []
+    if username is not None:
+        updates.append("username = ?")
+        params.append(username)
+        if _column_exists(conn, "users", "email"):
+            updates.append("email = ?")
+            params.append(username)
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name.strip())
+    if not updates:
+        return
+    params.append(user_id)
+    conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
 
 
 def _sync_finance_from_default_product(conn, user_id: int) -> None:

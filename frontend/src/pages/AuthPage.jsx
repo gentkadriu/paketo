@@ -114,7 +114,7 @@ export default function AuthPage() {
                   placeholder="••••••••"
                   autoComplete={mode === "login" ? "current-password" : "new-password"}
                   required
-                  minLength={6}
+                  minLength={8}
                 />
               </div>
             </div>

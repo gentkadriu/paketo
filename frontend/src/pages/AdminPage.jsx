@@ -5,6 +5,7 @@ import { useToast } from "../context/ToastContext";
 import { useI18n } from "../context/I18nContext";
 
 const SUBSCRIPTION_PRESETS = [30, 60, 90];
+const SUBTRACT_PRESETS = [7, 30];
 
 function subscriptionStatusClass(status) {
   if (status === "active") return "text-emerald-400";
@@ -13,7 +14,7 @@ function subscriptionStatusClass(status) {
   return "text-rose-400";
 }
 
-function SubscriptionCell({ user, t, onAddDays, onSuspend, onUnsuspend }) {
+function SubscriptionCell({ user, t, onAddDays, onSubtractDays, onSuspend, onUnsuspend }) {
   const [customDays, setCustomDays] = useState("");
 
   if (user.role === "admin") {
@@ -28,6 +29,11 @@ function SubscriptionCell({ user, t, onAddDays, onSuspend, onUnsuspend }) {
 
   const addDays = (days) => {
     onAddDays(user.id, days);
+    setCustomDays("");
+  };
+
+  const subtractDays = (days) => {
+    onSubtractDays(user.id, days);
     setCustomDays("");
   };
 
@@ -81,6 +87,18 @@ function SubscriptionCell({ user, t, onAddDays, onSuspend, onUnsuspend }) {
         >
           <CalendarPlus className="h-3 w-3" />
         </button>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {SUBTRACT_PRESETS.map((days) => (
+          <button
+            key={`sub-${days}`}
+            type="button"
+            className="btn-secondary !py-1 !px-2 text-[10px] text-rose-400"
+            onClick={() => subtractDays(days)}
+          >
+            −{days}d
+          </button>
+        ))}
       </div>
       {status === "suspended" ? (
         <button
@@ -181,6 +199,19 @@ export default function AdminPage() {
         body: JSON.stringify({ days }),
       });
       show(t("admin.subTimeAdded", { count: days }));
+      load();
+    } catch (err) {
+      show(err.message, "error");
+    }
+  };
+
+  const subtractSubscriptionDays = async (userId, days) => {
+    try {
+      await api(`/admin/users/${userId}/subscription/subtract`, {
+        method: "POST",
+        body: JSON.stringify({ days }),
+      });
+      show(t("admin.subTimeRemoved", { count: days }));
       load();
     } catch (err) {
       show(err.message, "error");
@@ -300,7 +331,7 @@ export default function AdminPage() {
           <Users className="h-5 w-5" />
           {t("admin.users")}
         </h2>
-        <div className="overflow-x-auto -mx-1">
+        <div className="hidden md:block overflow-x-auto -mx-1">
           <table className="w-full text-sm min-w-[720px]">
             <thead>
               <tr className="text-left text-themed-muted text-xs uppercase">
@@ -326,6 +357,7 @@ export default function AdminPage() {
                       user={u}
                       t={t}
                       onAddDays={addSubscriptionDays}
+                      onSubtractDays={subtractSubscriptionDays}
                       onSuspend={(id) => updateUser(id, { subscription_status: "suspended" })}
                       onUnsuspend={(id) => updateUser(id, { subscription_status: "active" })}
                     />
@@ -369,6 +401,61 @@ export default function AdminPage() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        <div className="md:hidden space-y-3">
+          {users.map((u) => (
+            <div key={u.id} className="rounded-xl border border-themed p-3 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-medium text-themed">{u.username}</div>
+                  {u.role === "admin" && (
+                    <span className="text-[10px] uppercase text-indigo-400 font-bold">Admin</span>
+                  )}
+                  <div className="text-xs text-themed-muted mt-0.5">{u.store_name || "—"}</div>
+                </div>
+                <span className={u.is_active ? "text-emerald-400 text-xs" : "text-rose-400 text-xs"}>
+                  {u.is_active ? t("admin.active") : t("admin.inactive")}
+                </span>
+              </div>
+              <SubscriptionCell
+                user={u}
+                t={t}
+                onAddDays={addSubscriptionDays}
+                onSubtractDays={subtractSubscriptionDays}
+                onSuspend={(id) => updateUser(id, { subscription_status: "suspended" })}
+                onUnsuspend={(id) => updateUser(id, { subscription_status: "active" })}
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary !py-1.5 text-xs flex-1"
+                  onClick={() => updateUser(u.id, { is_active: !u.is_active })}
+                >
+                  {u.is_active ? t("admin.deactivate") : t("admin.activate")}
+                </button>
+              </div>
+              <div className="flex gap-1">
+                <input
+                  type="password"
+                  className="input-field !py-1.5 !min-h-0 text-xs flex-1 min-w-0"
+                  placeholder={t("admin.newPassword")}
+                  value={resetPasswords[u.id] || ""}
+                  onChange={(e) => setResetPasswords((prev) => ({
+                    ...prev,
+                    [u.id]: e.target.value,
+                  }))}
+                />
+                <button
+                  type="button"
+                  className="btn-secondary !py-1.5 text-xs shrink-0"
+                  onClick={() => resetPassword(u.id)}
+                >
+                  {t("admin.resetPassword")}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>

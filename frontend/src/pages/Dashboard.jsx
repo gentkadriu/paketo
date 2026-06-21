@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Calendar, ChevronDown, ChevronRight, Package, Plus } from "lucide-react";
+import { useNavigate, Link } from "react-router-dom";
+import { Calendar, ChevronDown, ChevronRight, Package, Plus, Settings } from "lucide-react";
 import { api, formatDate } from "../api";
 import { useI18n } from "../context/I18nContext";
 import StatusPill from "../components/StatusPill";
@@ -16,7 +16,14 @@ export default function Dashboard() {
   const [today, setToday] = useState(null);
   const [dateSheetOpen, setDateSheetOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [hasProducts, setHasProducts] = useState(true);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    api("/settings")
+      .then((res) => setHasProducts((res.products || []).length > 0))
+      .catch(() => setHasProducts(true));
+  }, [batches]);
 
   useEffect(() => {
     api("/dashboard/today").then(setToday).catch(() => {});
@@ -49,9 +56,28 @@ export default function Dashboard() {
   const batchList = (
     <div className="space-y-2 sm:space-y-3">
       {batches.length === 0 ? (
-        <div className="glass flex flex-col items-center justify-center py-12 sm:py-16 text-themed-muted">
+        <div className="glass flex flex-col items-center justify-center py-12 sm:py-16 text-themed-muted px-4 text-center">
           <Package className="mb-3 h-10 w-10 opacity-40" />
           <p>{t("dashboard.noBatches")}</p>
+          {!hasProducts && (
+            <p className="mt-2 text-sm max-w-sm">{t("dashboard.onboardingNoProduct")}</p>
+          )}
+          <div className="mt-4 flex flex-wrap gap-2 justify-center">
+            {!hasProducts && (
+              <Link to="/settings" className="btn-secondary inline-flex items-center gap-2 min-h-[44px]">
+                <Settings className="h-4 w-4" />
+                {t("dashboard.addProductCta")}
+              </Link>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate("/new")}
+              className="btn-primary inline-flex items-center gap-2 min-h-[44px]"
+            >
+              <Plus className="h-4 w-4" />
+              {t("nav.newBatch")}
+            </button>
+          </div>
         </div>
       ) : (
         batches.map((b) => {

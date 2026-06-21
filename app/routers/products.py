@@ -12,11 +12,14 @@ from app.finance_db import get_finance_config
 from app.platform_db import (
     create_product,
     delete_product,
+    get_default_product,
     list_products,
     product_row,
     update_product,
     get_product,
+    update_user_profile,
 )
+from app.username import normalize_username, validate_username
 
 router = APIRouter(prefix="/api", tags=["store"])
 
@@ -28,6 +31,11 @@ class StoreUpdateRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=8)
+
+
+class ProfileUpdateRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=30)
+    name: str | None = Field(default=None, max_length=80)
 
 
 class ProductCreateRequest(BaseModel):
@@ -55,11 +63,58 @@ def get_settings(user: User):
     with get_connection() as conn:
         cfg = get_finance_config(conn, user["id"])
         products = list_products(conn, user["id"])
+        default_product = get_default_product(conn, user["id"])
     return {
+        "username": user.get("username") or "",
+        "name": user.get("name") or "",
         "store_name": user.get("store_name") or "",
         "products": products,
+        "default_product": default_product,
         "finance_config": cfg,
     }
+
+
+@router.patch("/settings/profile")
+def update_profile(body: ProfileUpdateRequest, user: User):
+    if body.username is None and body.name is None:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+
+    username = None
+    if body.username is not None:
+        username = normalize_username(body.username)
+        error = validate_username(username)
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+
+    name = None
+    if body.name is not None:
+        cleaned = body.name.strip()
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="Display name cannot be empty.")
+        name = cleaned
+
+    with get_connection() as conn:
+        if username is not None and username != user["username"]:
+            taken = conn.execute(
+                "SELECT id FROM users WHERE username = ? AND id != ?",
+                (username, user["id"]),
+            ).fetchone()
+            if taken:
+                raise HTTPException(status_code=400, detail="Username is already taken.")
+        update_user_profile(conn, user["id"], username=username, name=name)
+        row = conn.execute(
+            """
+            SELECT id, username, name, role, is_active,
+                   subscription_status, subscription_expires_at,
+                   store_name, created_at
+            FROM users WHERE id = ?
+            """,
+            (user["id"],),
+        ).fetchone()
+
+    from app.platform_db import user_platform_row
+
+    return user_platform_row(row)
 
 
 @router.patch("/settings/store")
